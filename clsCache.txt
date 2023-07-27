@@ -1,0 +1,2479 @@
+Option Compare Database
+Option Explicit
+
+' Cache class based on clsCHive
+
+Const ModuleName$ = "clsCache"
+
+Const conQuote = """"
+
+' Data and time delimiter "~"
+' Words delimiter is ","
+
+''Private vKey As String
+Private strgetOpenArg() As String
+Private strgetOpenArgVarTypes() As String        ' VarTypes
+Private strgetOpenArgFields() As String          ' Fields
+
+Private intArgs As Long
+Private idx As Long
+
+'----------------------
+' Class Members
+' 26 Jan 2021
+''Private mCHive As New CHive
+''Private mCacheStat As New clsCacheStat          ' Cache Stat
+''Private mUtils As New clsCacheUtils             ' Some helpfull functions in Cache
+
+Private mCHive As CHive                     ' Binary tree
+Private mCacheStat As clsCacheStat          ' Cache Stat
+Private mUtils As clsCacheUtils             ' Some helpfull functions in Cache
+'----------------------
+
+' Private mTime As New clsTime                  ' Cache time for current session
+
+Private mCacheLifeTime As Long
+Private mItems As String
+
+Private conConnection As ADODB.Connection
+Private rst As ADODB.Recordset
+Private StrSQL As String
+
+Private Sub Class_Initialize()
+
+' Init Hive Collections
+
+Set mCHive = New CHive
+mCHive.AllowDuplicate = False
+mCHive.CompareMode = vbTextCompare
+
+Set mCacheStat = New clsCacheStat
+Set mUtils = New clsCacheUtils
+
+' Set mTime = New clsTime
+
+mCacheLifeTime = 3600 * 8
+
+' Clear basket
+Items() = ""
+
+End Sub
+
+Private Sub Class_Terminate()
+Set mCHive = Nothing
+Set mCacheStat = Nothing
+Set mUtils = Nothing
+' Set mTime = Nothing
+End Sub
+
+Public Property Get Ver() As String
+    ' clsCache version
+    Ver = "Cache 2021-Jan-30"
+    
+    ' Dependencies:
+    ' CHive
+    ' clsCacheStat
+    ' clsCacheUtils
+    
+End Property
+
+'------------------------
+' Cache Statistics
+' Inheritance clsCacheStat
+'------------------------
+
+' 1. Cache Hits ONLY
+' The total number of times an access attempt successfully retrieved an item
+' or query result from the cache.
+Public Property Get Hits() As Long
+    Hits = mCacheStat.Hits
+End Property
+
+Public Property Let Hits(ByVal NewHits As Long)
+    mCacheStat.Hits = NewHits
+End Property
+
+' 2. Database Hits
+' The total number of times an access attempt retrieved an item
+' or query result from the database.
+Public Property Get DBHits() As Long
+    DBHits = mCacheStat.DBHits
+End Property
+
+Public Property Let DBHits(ByVal NewDBHits As Long)
+    mCacheStat.DBHits = NewDBHits
+End Property
+
+' 3. Requests=Cache ONLY + Database
+' The total number of attempts to retrieve items or query results from the cache.
+Public Property Get Requests() As Single
+    Requests = mCacheStat.Requests
+End Property
+
+Public Property Get RequestsStr() As String
+    RequestsStr = mCacheStat.RequestsStr
+End Property
+
+' 4. Effectiveness=(Cache ONLY Hits)/(Cache ONLY Hits + Misses)
+' The ratio of Hits to Requests.
+Public Property Get Effectiveness() As Single
+    Effectiveness = mCacheStat.Effectiveness
+End Property
+
+Public Property Get EffectivenessStr() As String
+    EffectivenessStr = mCacheStat.EffectivenessStr
+End Property
+
+'------------------
+' Inheritance CHive
+Public Property Get Count() As Long
+' The number of entries currently in the cache.
+    Count = mCHive.Count
+End Property
+
+Public Property Get Size() As Long
+' The maximum size of the cache.
+    Size = mCHive.Size
+End Property
+
+Public Property Get Ratio() As Single
+' The percent of the maximum cache size now in use.
+' If this ratio is close to 100, you probably want to increase the cache Size.
+    Ratio = 0
+    If Size > 0 Then
+        If Count > 0 Then
+        Ratio = Format(100 * Count / Size, "#0.0")
+        End If
+    End If
+End Property
+
+Public Property Get RatioStr() As String
+' The percent of the maximum cache size now in use.
+' If this ratio is close to 100, you probably want to increase the cache Size.
+    RatioStr = "0%"
+    If Size > 0 Then
+        If Count > 0 Then
+            RatioStr = Format(100 * Count / Size, "#0.0") & "%" & " (" & CStr(Count) & "/" & CStr(Size) & ")"
+        End If
+    End If
+End Property
+
+'----------------------
+' Cache Statistics End
+'----------------------
+
+Public Function Add(ByRef Item As Variant, _
+                    Optional ByVal vKey As Variant, _
+                    Optional ByVal Before As Variant, _
+                    Optional ByVal After As Variant) As Boolean
+'   inputs:
+'       Item        Item to store
+'       Key         Key to use
+'       Before      The item before which this item will be inserted
+'       After      The item After which this item will be inserted
+'   action:
+'       Inserts Item with Key.
+                    
+Add = mCHive.Add(Item, vKey, Before, After)
+    
+End Function
+
+Public Function Exist(ByVal vKey As Variant) As Boolean
+'   action:
+'       Searches in the array for the specified item
+'   inputs:
+'       vKey        The key or Index of the item
+'   returns:
+'       True is item exist. Otherwise false
+
+    Exist = CBool(mCHive.Exist(vKey))
+    
+End Function
+
+Public Function Find(ByVal vKey As Variant) As Variant
+'   inputs:
+'       Key                   ' designates key to find
+'   returns:
+'       Data to node
+'   action:
+'       Search tree for designated key, and return data to node.
+
+    Find = mCHive.Find(vKey)
+    
+End Function
+
+Public Function Remove(ByVal vKey As Variant) As Long
+'   inputs:
+'       vKey                key of node to delete
+'   action:
+'       Deletes record with key KeyVal.
+' returns index
+    Remove = mCHive.Remove(vKey)
+    
+End Function
+
+Public Property Get Item(ByVal vKey As Variant) As Variant
+'   action:
+'       Returns the item's data specified in vKey
+'   inputs:
+'       vKey        The key or Index of the item
+
+    Item = mCHive.Item(vKey)
+
+End Property
+
+Public Property Let Item(ByVal vKey As Variant, ByRef vNewValue As Variant)
+
+    ' Update item's data
+    Let mCHive.Item(vKey) = vNewValue
+    
+End Property
+
+' Inheritance CHive end
+'------------------
+
+''Public Property Get Seconds() As Single
+''    Seconds = mTime.Seconds
+''End Property
+
+'------------------
+' Inheritance clsCacheUtils
+' Count the number of words in a string.
+Public Function CountItems(ByVal strList As String, _
+                           Optional ByVal strDelimiter As String = ",", _
+                           Optional ByVal fCountConsecAsOne As Boolean = False) As Long
+                           
+CountItems = mUtils.CountItems(strList, strDelimiter, fCountConsecAsOne)
+    
+End Function
+
+'------------------
+' Inheritance End
+'------------------
+
+
+Public Property Get CacheLifeTime() As Long
+    CacheLifeTime = mCacheLifeTime
+End Property
+
+Public Property Let CacheLifeTime(ByVal NewCacheLifeTime As Long)
+    mCacheLifeTime = NewCacheLifeTime
+End Property
+
+Public Property Get Items() As String
+    ' Get Data Items
+    Items = mItems
+End Property
+
+Public Property Let Items(ByVal NewItems As String)
+    ' Set Data Items
+    mItems = NewItems
+End Property
+
+
+'--------------------------------------------------------------------------
+' Project      : clsCache
+' Description  : Returns the number of string variables from cache.
+' Calls        : Key
+' Accepts      : vKey = A single string containg the key.
+' Returns      : The number of items.
+' Result       : String value in mItems. Example mItems="99999,8888888"
+' Written By   : Dani Sapfirov
+' Date Created : 20/04/2009 16:00:36 PM
+' Rev. History :
+' Comments     :
+'--------------------------------------------------------------------------
+' Sample code
+
+'Dim dblGetFuelPrice As Double
+'intArgs = Cache.ReadWords("1765325785871")
+'If CBool(intArgs) Then
+'    ' Cache Hit
+'    MsgBox strgetOpenArg(Cache.Items, 1)
+'Else
+' Cache Miss, Get From database
+'    dblGetFuelPrice = GetFuelPrice("1765325785871")
+'    ' Add to Cache
+'    Call Cache.WriteWords(CStr(dblGetFuelPrice),"1765325785871")
+'End If
+' Cache ends
+'----------------------------------------------------------------------------------
+
+' Read Words associated to vKey
+Public Function ReadWords(ByRef vKey As Variant) As Long
+On Error GoTo ReadWords_Err
+
+' Assume failure
+ReadWords = 0
+
+Items() = ""
+
+' Check if exists in memory
+If Exist(vKey) Then
+'' If mCHive.Exist(vKey) Then
+    Hits() = Hits() + 1
+    ' Get data
+    ' Get Cache Data. Copy to local buffer
+    Items() = Item(vKey)
+    '' mItems = mCHive.Item(vKey)
+    
+    ReadWords = CountItems(Items(), Chr$(13))
+    
+    Exit Function
+End If
+
+WrapUp:
+
+ReadWords_Exit:
+    Exit Function
+
+ReadWords_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.ReadWords"
+    Resume ReadWords_Exit
+End Function
+
+
+' Write/Update Words associated to vKey
+Public Function WriteWords(ByRef NewValue As Variant, _
+                           ByRef vKey As Variant) As Boolean
+On Error GoTo WriteWords_Err
+
+' Assume Failure
+WriteWords = False
+
+' Check if exists in memory
+If Exist(vKey) Then
+    
+    ' The value already exists in collection.
+    ' Get from collection.
+    Dim strTemp As String
+    strTemp = CStr(Item(vKey))
+    
+    ' If the new value equals existing value exit
+    If StrComp(CStr(NewValue), CStr(strTemp), vbTextCompare) = 0 Then
+        ' Success
+        WriteWords = True
+        Exit Function
+    Else
+        ' Remove the old value from collection
+        Call Remove(vKey)
+    End If
+
+End If
+
+If Add(NewValue, vKey) Then WriteWords = True
+
+WrapUp:
+
+WriteWords_Exit:
+    Exit Function
+
+WriteWords_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.WriteWords"
+    Resume WriteWords_Exit
+End Function
+
+' ------------------------
+' Databese operations
+' ------------------------
+' SELECT Single field
+' ------------------------
+
+' SQL_Select from memory or database
+Public Function SelectField(ByRef FieldName As String, _
+                            ByRef TableName As String, _
+                            ByRef strWhere As String) As String
+On Error GoTo SelectField_Err
+
+' Assume Failure
+SelectField = ""
+
+' Field name should be single field
+If GetItem(FieldName, TableName, strWhere) Then SelectField = Items()
+
+WrapUp:
+
+SelectField_Exit:
+    Exit Function
+SelectField_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.SelectField"
+    Resume SelectField_Exit
+End Function
+
+' SQL_SELECT from memory or database
+Public Function GetItem(ByRef FieldName As String, _
+                            ByRef TableName As String, _
+                            ByRef strWhere As String) As Boolean
+On Error GoTo GetItem_Err
+
+' 1. Init Return Value
+' Assume Failure
+GetItem = False
+
+' 2. Declare/Init Variables. 3. Compile Domain/Key
+Dim vKey As Variant
+vKey = CStr(FieldName) & ";" & CStr(TableName) & ";" & CStr(strWhere)
+
+' 4. Cache Read
+If Exist(vKey) Then
+    ' 4.1 Execute. Get item from Cache
+    ReDim strgetOpenArg(2)
+    ' Data and time separator "~"
+    strgetOpenArg = Split(Item(vKey), "~")
+       
+    ' 4.2 Check lifetime for items in the cache
+    If Timer - CSng(strgetOpenArg(1)) < mCacheLifeTime Then
+        ' 4.3 Update Cache statistics
+        Hits() = Hits() + 1
+        ' 4.4 Read Items from Cache
+        Items() = strgetOpenArg(0)
+        ' 4.5 Indicate Success and exit
+        GetItem = True
+
+        Exit Function
+    Else
+        ' 4.21 Remove outdated items from Cache
+        Call Remove(vKey)
+    End If
+      
+End If
+
+' 5. Update DB statistics, DB Read, Missed
+DBHits() = DBHits() + 1
+
+If DBLookUp(FieldName, TableName, strWhere) Then
+
+    ' 6. Add Items to Cache
+    If Add(Items() & "~" & CStr(Timer), vKey) Then GetItem = True
+    
+End If
+
+WrapUp:
+
+GetItem_Exit:
+    ' 8. Exit
+    Exit Function
+
+GetItem_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.GetItem"
+    Resume GetItem_Exit
+End Function
+
+' SQL_SELECT ID of Inserted record from database
+Public Function Inserted(ByRef FieldName As String, _
+                         ByRef TableName As String, _
+                         Optional ByRef strWhere As String = "") As Boolean
+On Error GoTo Inserted_Err
+
+' 1. Init Return Value
+' Assume Failure
+Inserted = False
+
+' 2. Declare/Init Variables. 3. Compile Domain/Key
+Dim vKey As Variant
+vKey = CStr(FieldName) & ";" & CStr(TableName) & ";" & CStr(strWhere)
+
+' 4. Cache Read
+If Exist(vKey) Then
+    ' 4.1 Execute. Get item from Cache
+    ReDim strgetOpenArg(2)
+    ' Data and time separator "~"
+    strgetOpenArg = Split(Item(vKey), "~")
+       
+    ' 4.2 Check lifetime for items in the cache
+    If Timer - CSng(strgetOpenArg(1)) < mCacheLifeTime Then
+        ' 4.3 Update Cache statistics
+        Hits() = Hits() + 1
+        ' 4.4 Read Items from Cache
+        Items() = strgetOpenArg(0)
+        ' 4.5 Indicate Success and exit
+        Inserted = True
+
+        Exit Function
+    Else
+        ' 4.21 Remove outdated items from Cache
+        Call Remove(vKey)
+    End If
+      
+End If
+
+' 5. Update DB statistics, DB Read, Missed
+DBHits() = DBHits() + 1
+
+If DBMax(FieldName, TableName, strWhere) Then
+
+    ' 6. Add Items to Cache
+    If Add(Items() & "~" & CStr(Timer), vKey) Then Inserted = True
+    
+End If
+
+WrapUp:
+
+Inserted_Exit:
+    ' 8. Exit
+    Exit Function
+
+Inserted_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.Inserted"
+    Resume Inserted_Exit
+End Function
+
+
+Public Function Delete(ByRef FieldName As String, _
+                       ByRef TableName As String, _
+                       Optional ByRef strWhere As String = "") As Boolean
+On Error GoTo Delete_Err
+
+' 1. Init Return Value
+' Assume Failure
+Delete = False
+
+' 2. Declare/Init Variables. 3. Compile Domain/Key
+Dim vKey As Variant
+vKey = CStr(FieldName) & ";" & CStr(TableName) & ";" & CStr(strWhere)
+
+' 4. Cache Read
+If Exist(vKey) Then
+    ' 4.1 Remove outdated Items from Cache
+    Call Remove(vKey)
+End If
+
+DBHits() = DBHits() + 1
+
+Dim conConnection As ADODB.Connection
+   
+StrSQL = "DELETE FROM [" & TableName & "]"
+StrSQL = StrSQL & " WHERE " & strWhere & ";"
+               
+Set conConnection = CurrentProject.Connection
+conConnection.Execute StrSQL, iAffected, adExecuteNoRecords
+Delete = True
+
+WrapUp:
+conConnection.Close
+
+Exit_Delete:
+    Set conConnection = Nothing
+    Exit Function
+
+Delete_Err:
+    If Not conConnection Is Nothing Then
+        If conConnection.State = adStateOpen Then conConnection.Close
+    End If
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.Delete"
+    Resume Exit_Delete
+End Function
+
+Public Function DeleteTX(ByRef conConnection As ADODB.Connection, _
+                         ByRef flgTransGo As Boolean, _
+                         ByRef FieldName As String, _
+                         ByRef TableName As String, _
+                         Optional ByRef strWhere As String = "") As Boolean
+On Error GoTo DeleteTX_Err
+
+' 1. Init Return Value
+' Assume Failure
+DeleteTX = False: flgTransGo = False
+
+' 2. Declare/Init Variables. 3. Compile Domain/Key
+Dim vKey As Variant
+vKey = CStr(FieldName) & ";" & CStr(TableName) & ";" & CStr(strWhere)
+
+' 4. Cache Read
+If Exist(vKey) Then
+    ' 4.1 Remove outdated Items from Cache
+    Call Remove(vKey)
+End If
+
+DBHits() = DBHits() + 1
+   
+StrSQL = "DELETE FROM [" & TableName & "]"
+StrSQL = StrSQL & " WHERE " & strWhere & ";"
+               
+Set conConnection = CurrentProject.Connection
+
+conConnection.BeginTrans
+conConnection.Execute StrSQL, iAffected, adExecuteNoRecords
+conConnection.CommitTrans
+
+WrapUp:
+' Indicate Success
+DeleteTX = True: flgTransGo = True
+
+Exit_DeleteTX:
+    Exit Function
+
+DeleteTX_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.DeleteTX"
+    Resume Exit_DeleteTX
+End Function
+
+
+' UPDATE multiple fields
+Public Function Update(ByRef strNewValues As String, _
+                       ByRef strVarTypes As String, _
+                       ByRef FieldNames As String, _
+                       ByRef TableName As String, _
+                       ByRef strWhere As String) As Boolean
+On Error GoTo Update_Err
+' Update Record
+
+' 1. Init Return Value
+' Assume Failure
+Update = False
+
+' 2. Declare/Init Variables. 3. Compile Domain/Key
+Dim vKey As Variant
+vKey = CStr(FieldNames) & ";" & CStr(TableName) & ";" & CStr(strWhere)
+
+' 4. Cache Read
+If Exist(vKey) Then
+    ' 4.1 Remove outdated Items from Cache
+    Call Remove(vKey)
+End If
+
+DBHits() = DBHits() + 1
+
+' Update
+If DBUpdates(strNewValues, strVarTypes, FieldNames, TableName, strWhere) Then
+    ' Add to collection for later use
+    
+    ' Call Add(CStr(NewValue), vKey)
+    If Add(Items() & "~" & CStr(Timer), vKey) Then Update = True ' Add to Cache
+
+End If
+
+WrapUp:
+
+Update_Exit:
+    Exit Function
+
+Update_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.Update"
+    Resume Update_Exit
+End Function
+
+Public Function UpdateTX(ByRef conConnection As ADODB.Connection, _
+                         ByRef flgTransGo As Boolean, _
+                         ByRef strNewValues As String, _
+                         ByRef strVarTypes As String, _
+                         ByRef FieldNames As String, _
+                         ByRef TableName As String, _
+                         ByRef strWhere As String) As Boolean
+On Error GoTo UpdateTX_Err
+' Update Record
+
+' 1. Init Return Value
+' Assume Failure
+UpdateTX = False
+
+' 2. Declare/Init Variables. 3. Compile Domain/Key
+Dim vKey As Variant
+vKey = CStr(FieldNames) & ";" & CStr(TableName) & ";" & CStr(strWhere)
+
+' 4. Cache Read
+If Exist(vKey) Then
+    ' 4.1 Remove outdated Items from Cache
+    Call Remove(vKey)
+End If
+
+DBHits() = DBHits() + 1
+
+' Update
+If DBUpdatesTX(conConnection, flgTransGo, strNewValues, strVarTypes, FieldNames, TableName, strWhere) Then
+    ' Add to collection for later use
+    
+    ' Call Add(CStr(NewValue), vKey)
+    If Add(Items() & "~" & CStr(Timer), vKey) Then UpdateTX = True ' Add to Cache
+
+End If
+
+WrapUp:
+
+UpdateTX_Exit:
+    Exit Function
+
+UpdateTX_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.UpdateTX"
+    Resume UpdateTX_Exit
+End Function
+
+' SQL_Count from memory or database
+Public Function CountField(ByRef FieldName As String, _
+                           ByRef TableName As String, _
+                           ByRef strWhere As String) As Long
+On Error GoTo CountField_Err
+
+' Assume Failure
+CountField = 0
+
+If IsCountAvailable(FieldName, TableName, strWhere) Then CountField = CLng(Items())
+
+WrapUp:
+
+CountField_Exit:
+    Exit Function
+CountField_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.CountField"
+    Resume CountField_Exit
+End Function
+
+' SQL_Sum from memory or database
+Public Function SumField(ByRef FieldName As String, _
+                           ByRef TableName As String, _
+                           ByRef strWhere As String) As Long
+On Error GoTo SumField_Err
+
+' Assume Failure
+SumField = 0
+
+If IsSumAvailable(FieldName, TableName, strWhere) Then SumField = CLng(Items())
+
+WrapUp:
+
+SumField_Exit:
+    Exit Function
+SumField_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.SumField"
+    Resume SumField_Exit
+End Function
+
+' Get String data from memory or database
+Public Function IsCountAvailable(ByRef FieldName As String, _
+                          ByRef TableName As String, _
+                          ByRef strWhere As String) As Boolean
+On Error GoTo IsCountAvailable_Err
+
+' 1. Init Return Value. Assume Failure
+IsCountAvailable = False
+
+' 2. Declare/Init Variables. 3. Compile Domain/Key
+Dim vKey As Variant
+vKey = CStr(FieldName) & ";" & CStr(TableName) & ";" & CStr(strWhere)
+''vKey = Fields() & ";" & DataSource() & ";" & CStr(strWhere)
+
+' 4. Cache Read
+If Exist(vKey) Then
+    ' 4.1 Execute. Get item from Cache
+    ReDim strgetOpenArg(2)
+    ' Data and time separator "~"
+    strgetOpenArg = Split(Item(vKey), "~")
+
+    ' 4.2 Check lifetime for items in the cache
+    If Timer - CSng(strgetOpenArg(1)) < mCacheLifeTime Then
+        ' 4.3 Update Cache statistics
+        Hits() = Hits() + 1
+        ' 4.4 Read Items from Cache
+        Items() = strgetOpenArg(0)
+        ' 4.5 Indicate Success and exit
+        IsCountAvailable = True
+        
+        Exit Function
+    Else
+        ' 4.21 Remove outdated items from Cache
+        Call Remove(vKey)
+    End If
+      
+End If
+
+' 5. Update DB statistics, DB Read, Missed
+DBHits() = DBHits() + 1
+
+If DBCount(FieldName, TableName, strWhere) Then
+
+    ' 6. Add Items to Cache
+    If Add(Items() & "~" & CStr(Timer), vKey) Then IsCountAvailable = True
+        
+End If
+
+WrapUp:
+
+IsCountAvailable_Exit:
+    ' 8.Exit
+    Exit Function
+
+IsCountAvailable_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.IsCountAvailable"
+    Resume IsCountAvailable_Exit
+End Function
+
+' Get String data from memory or database
+Public Function IsSumAvailable(ByRef FieldName As String, _
+                          ByRef TableName As String, _
+                          ByRef strWhere As String) As Boolean
+On Error GoTo IsSumAvailable_Err
+
+' 1. Init Return Value. Assume Failure
+IsSumAvailable = False
+
+' 2. Declare/Init Variables. 3. Compile Domain/Key
+Dim vKey As Variant
+vKey = CStr(FieldName) & ";" & CStr(TableName) & ";" & CStr(strWhere)
+
+' 4. Cache Read
+If Exist(vKey) Then
+    ' 4.1 Execute. Get item from Cache
+    ReDim strgetOpenArg(2)
+    ' Data and time separator "~"
+    strgetOpenArg = Split(Item(vKey), "~")
+
+    ' 4.2 Check lifetime for items in the cache
+    If Timer - CSng(strgetOpenArg(1)) < mCacheLifeTime Then
+        ' 4.3 Update Cache Reads statistics
+        Hits() = Hits() + 1
+        ' 4.4 Read Items from Cache
+        Items() = strgetOpenArg(0)
+        ' 4.5 Indicate Success and exit
+        IsSumAvailable = True
+        
+        Exit Function
+    Else
+        ' 4.21 Remove outdated items from Cache
+        Call Remove(vKey)
+    End If
+      
+End If
+
+' 5. Update DB statistics, DB Read, Missed
+DBHits() = DBHits() + 1
+
+If DBSum(FieldName, TableName, strWhere) Then
+
+    ' 6. Add Items to Cache
+    If Add(Items() & "~" & CStr(Timer), vKey) Then IsSumAvailable = True
+    
+End If
+
+WrapUp:
+
+IsSumAvailable_Exit:
+    ' 8.Exit
+    Exit Function
+
+IsSumAvailable_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.IsSumAvailable"
+    Resume IsSumAvailable_Exit
+End Function
+
+
+Public Function DBLookUp(ByRef FieldName As String, _
+                         ByRef TableName As String, _
+                         ByRef strWhere As String) As Boolean
+
+On Error GoTo DBLookUp_Err
+' Purpose:
+' Get a single value for FieldName
+' From Table: TableName
+' Using criteria strWhere
+' Copy the item to Items string
+
+' Assume Failure
+DBLookUp = False
+Items() = ""
+
+Set conConnection = CurrentProject.Connection
+
+StrSQL = "SELECT [" & FieldName & "] FROM [" & TableName & "] WHERE " & strWhere
+
+Set rst = New ADODB.Recordset
+rst.Open StrSQL, conConnection, adOpenForwardOnly, adLockReadOnly, adCmdText
+
+If Not rst.BOF Then
+    
+    rst.MoveFirst
+    
+    ' Add items
+    Items() = CStr(Nz(rst(0), "NULL"))
+    
+    ' Success
+    DBLookUp = True
+   
+End If
+
+WrapUp:
+rst.Close
+conConnection.Close
+
+Exit_DBLookUp:
+    Set rst = Nothing
+    Set conConnection = Nothing
+Exit Function
+
+DBLookUp_Err:
+    If Not rst Is Nothing Then
+        If rst.State = adStateOpen Then rst.Close
+    End If
+    If Not conConnection Is Nothing Then
+        If conConnection.State = adStateOpen Then conConnection.Close
+    End If
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.DBLookUp"
+    Resume Exit_DBLookUp
+End Function
+
+
+''Public Function DBCount(ByRef FieldName As String, _
+''                        ByRef TableName As String, _
+''                        ByRef strWhere As String) As Boolean
+''On Error GoTo DBCount_Err
+''
+' Assume Failure
+''DBCount = False
+''Items() = "0"
+
+''Set conConnection = CurrentProject.Connection
+
+''StrSQL = "SELECT Count ([" & FieldName & "]) AS DBZAHL FROM [" & TableName & "] WHERE " & strWhere
+
+''Set rst = New ADODB.Recordset
+''rst.Open StrSQL, conConnection, adOpenStatic, adLockReadOnly, adCmdText
+
+''If Not rst.BOF Then
+    
+''    rst.MoveFirst
+''    Items() = CStr(Nz(rst(0), "0"))
+    
+''    ' Success
+''    DBCount = True
+   
+''End If
+
+''WrapUp:
+''rst.Close
+''conConnection.Close
+
+''Exit_DBCount:
+''    Set rst = Nothing
+''    Set conConnection = Nothing
+''Exit Function
+
+''DBCount_Err:
+''    If Not rst Is Nothing Then
+''        If rst.State = adStateOpen Then rst.Close
+''    End If
+''    If Not conConnection Is Nothing Then
+''        If conConnection.State = adStateOpen Then conConnection.Close
+''    End If
+''    MsgBox Err.Description, , "Error: " & Err.Number _
+''    & " in clsCache.DBCount"
+''    Resume Exit_DBCount
+''End Function
+
+Public Function DBCount(ByRef FieldName As String, _
+                        ByRef TableName As String, _
+                        ByRef strWhere As String) As Long
+On Error GoTo DBCount_Err
+
+' Assume Failure
+DBCount = 0
+
+Set conConnection = CurrentProject.Connection
+
+StrSQL = "SELECT Count ([" & FieldName & "]) AS DBZAHL FROM [" & TableName & "] WHERE " & strWhere
+
+Set rst = New ADODB.Recordset
+rst.Open StrSQL, conConnection, adOpenStatic, adLockReadOnly, adCmdText
+
+
+DBCount = Nz(rst(0), 0)
+
+''If Not rst.BOF Then
+''
+''    rst.MoveFirst
+''    Items() = CStr(Nz(rst(0), "0"))
+''
+''    ' Success
+''    DBCount = True
+''
+''End If
+
+WrapUp:
+rst.Close
+conConnection.Close
+
+Exit_DBCount:
+    Set rst = Nothing
+    Set conConnection = Nothing
+Exit Function
+
+DBCount_Err:
+    If Not rst Is Nothing Then
+        If rst.State = adStateOpen Then rst.Close
+    End If
+    If Not conConnection Is Nothing Then
+        If conConnection.State = adStateOpen Then conConnection.Close
+    End If
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.DBCount"
+    Resume Exit_DBCount
+End Function
+
+Public Function DBMax(ByRef FieldName As String, _
+                      ByRef TableName As String, _
+                      Optional ByRef strWhere As String) As Boolean
+
+On Error GoTo DBMax_Err
+' Purpose:
+' Get Max value for specified column
+' From Table: TableName
+' Copy the item to Items string
+
+' Assume Failure
+DBMax = False
+Items() = "0"
+
+Set conConnection = CurrentProject.Connection
+
+If Len(strWhere) Then
+    StrSQL = "SELECT MAX ([" & FieldName & "]) FROM [" & TableName & "] Where " & strWhere
+Else
+    StrSQL = "SELECT MAX ([" & FieldName & "]) FROM [" & TableName & "]"
+End If
+
+Set rst = New ADODB.Recordset
+rst.Open StrSQL, conConnection, adOpenForwardOnly, adLockReadOnly, adCmdText
+
+If Not rst.BOF Then
+    
+    rst.MoveFirst
+    Items() = CStr(Nz(rst(0), "0"))
+    
+    ' Success
+    DBMax = True
+   
+End If
+
+WrapUp:
+rst.Close
+conConnection.Close
+
+Exit_DBMax:
+    Set rst = Nothing
+    Set conConnection = Nothing
+Exit Function
+
+DBMax_Err:
+    If Not rst Is Nothing Then
+        If rst.State = adStateOpen Then rst.Close
+    End If
+    If Not conConnection Is Nothing Then
+        If conConnection.State = adStateOpen Then conConnection.Close
+    End If
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.DBMax"
+    Resume Exit_DBMax
+End Function
+                          
+
+' ------------------------
+' SELECT Multiple fields
+' ------------------------
+Public Function SelectFields(ByRef Fields As String, _
+                          ByRef TableName As String, _
+                          ByRef strWhere As String) As Long
+
+On Error GoTo SelectFields_Err
+
+' Assume failure
+SelectFields = 0
+                        
+' Compile Key
+Dim vKey As Variant
+vKey = CStr(Fields) & ";" & CStr(TableName) & ";" & CStr(strWhere)
+
+If Exist(vKey) Then
+    ' Cache Hit. Get Data and time
+    Items() = Item(vKey)
+    ' mItems = mCHive.Item(vKey)
+    intArgs = CountItems(Items(), Chr$(13))
+    'intArgs = mUtils.CountItems(mItems, Chr$(13))
+    
+    If CBool(intArgs) Then
+        
+        ReDim strgetOpenArg(intArgs)
+
+        ' Data and time separator "~"
+        strgetOpenArg = Split(Items(), "~")
+
+        If Timer - CSng(strgetOpenArg(1)) < mCacheLifeTime Then
+        
+            ' Cache Read Statistics
+            Hits() = Hits() + 1
+
+            Items() = strgetOpenArg(0)
+            SelectFields = CountItems(Items(), Chr$(13))
+
+            Exit Function
+        Else
+            ' Remove expired item from collection
+            Call Remove(vKey)
+        End If
+
+    End If
+
+End If
+
+' DBRead, Cache Missed Statistics
+DBHits() = DBHits() + 1
+
+' Read from database
+If DBLookUps(Fields, TableName, strWhere) Then
+    ' Success
+
+    ' Add to collection for later use
+    strgetOpenArg = Split(Items(), "~")                     ' Extract new data
+    
+    ' Add to collection for later use
+    If Add(strgetOpenArg(0) & "~" & CStr(Timer), vKey) Then SelectFields = CountItems(Items(), Chr$(13))
+
+End If
+
+WrapUp:
+
+SelectFields_Exit:
+    Exit Function
+
+SelectFields_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.SelectFields"
+    Resume SelectFields_Exit
+End Function
+
+Public Function SelectFieldsTX(ByRef conConnection As ADODB.Connection, _
+                               ByRef flgTransGo As Boolean, _
+                               ByRef Fields As String, _
+                               ByRef TableName As String, _
+                               ByRef strWhere As String) As Long
+
+On Error GoTo SelectFieldsTX_Err
+
+' Assume failure
+SelectFieldsTX = 0: flgTransGo = False
+                        
+' Compile Key
+Dim vKey As Variant
+vKey = CStr(Fields) & ";" & CStr(TableName) & ";" & CStr(strWhere)
+
+If Exist(vKey) Then
+    ' Cache Hit. Get Data and time
+    Items() = Item(vKey)
+    ' mItems = mCHive.Item(vKey)
+    intArgs = CountItems(Items(), Chr$(13))
+    'intArgs = mUtils.CountItems(mItems, Chr$(13))
+    
+    If CBool(intArgs) Then
+        
+        ReDim strgetOpenArg(intArgs)
+
+        ' Data and time separator "~"
+        strgetOpenArg = Split(Items(), "~")
+
+        If Timer - CSng(strgetOpenArg(1)) < mCacheLifeTime Then
+        
+            ' Cache Read Statistics
+            Hits() = Hits() + 1
+
+            Items() = strgetOpenArg(0)
+            SelectFieldsTX = CountItems(Items(), Chr$(13))
+            flgTransGo = True
+            Exit Function
+        Else
+            ' Remove expired item from collection
+            Call Remove(vKey)
+        End If
+
+    End If
+
+End If
+
+' DBRead, Cache Missed Statistics
+DBHits() = DBHits() + 1
+
+' Read from database
+If DBLookUpsTX(conConnection, flgTransGo, Fields, TableName, strWhere) Then
+    ' Success
+
+    ' Add to collection for later use
+    strgetOpenArg = Split(Items(), "~")                     ' Extract new data
+    
+    ' Add to collection for later use
+    If Add(strgetOpenArg(0) & "~" & CStr(Timer), vKey) Then
+    
+        SelectFieldsTX = CountItems(Items(), Chr$(13))
+        flgTransGo = True
+    
+    End If
+
+End If
+
+WrapUp:
+
+SelectFieldsTX_Exit:
+    Exit Function
+
+SelectFieldsTX_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.SelectFieldsTX"
+    Resume SelectFieldsTX_Exit
+End Function
+
+
+
+Public Function SelectNthFieldTX(ByRef conConnection As ADODB.Connection, _
+                               ByRef flgTransGo As Boolean, _
+                               ByRef Nth As Integer, _
+                               ByRef Fields As String, _
+                               ByRef TableName As String, _
+                               ByRef strWhere As String) As Long
+
+On Error GoTo SelectNthFieldTX_Err
+
+' Assume failure
+SelectNthFieldTX = 0: flgTransGo = False
+                        
+' Compile Key
+Dim vKey As Variant
+vKey = CStr(Fields) & ";" & CStr(TableName) & ";" & CStr(strWhere)
+
+If Exist(vKey) Then
+    ' Cache Hit. Get Data and time
+    Items() = Item(vKey)
+    ''mItems = mCHive.Item(vKey)
+    ''intArgs = mUtils.CountItems(mItems, Chr$(13))
+    intArgs = CountItems(Items(), Chr$(13))
+    
+    If CBool(intArgs) Then
+        
+        ReDim strgetOpenArg(intArgs)
+
+        ' Data and time separator "~"
+        strgetOpenArg = Split(Items(), "~")
+
+        If Timer - CSng(strgetOpenArg(1)) < mCacheLifeTime Then
+            ' Cache Read Statistics
+            Hits() = Hits() + 1
+
+            Items() = strgetOpenArg(0)
+            
+            '' SelectNthField = mUtils.CountItems(mItems, Chr$(13))
+            SelectNthFieldTX = CountItems(Items(), Chr$(13))
+            flgTransGo = True
+            
+            If Nth > SelectNthFieldTX Then
+                SelectNthFieldTX = 0
+                flgTransGo = False
+            End If
+
+            Exit Function
+        Else
+            ' Remove expired item from collection
+            Call Remove(vKey)
+        End If
+
+    End If
+
+End If
+
+' DBRead, Misses Statistics
+DBHits() = DBHits() + 1
+
+' Read from database
+If DBLookUpsTX(conConnection, flgTransGo, Fields, TableName, strWhere) Then
+    ' Success
+
+    ' Add to collection for later use
+    strgetOpenArg = Split(Items(), "~")                     ' Extract new data
+    ''SelectNthField = mUtils.CountItems(Items(), Chr$(13))
+    Items() = strgetOpenArg(0)
+    SelectNthFieldTX = CountItems(Items(), Chr$(13))
+    
+    If Nth > SelectNthFieldTX Then
+        SelectNthFieldTX = 0
+        ' flgTransGo = False
+    Else
+        If Add(strgetOpenArg(0) & "~" & CStr(Timer), vKey) Then   ' Add to collection for later use
+            flgTransGo = True
+        End If
+    End If
+
+End If
+
+WrapUp:
+
+SelectNthFieldTX_Exit:
+    Exit Function
+
+SelectNthFieldTX_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.SelectNthFieldTX"
+    Resume SelectNthFieldTX_Exit
+End Function
+
+' ------------------------
+' SELECT fields by choice
+' ------------------------
+
+'--------------------------------------------------------------------------
+' Project      : clsCache
+' Description  : Returns string variable from database.
+' Calls        : DBLookUp,CHive
+' Accepts      : Fields="MaterialName,AvgCost"
+'                TableName = "Materials"
+'                strWhere = "MaterialID = " & 22
+' Returns      : String value
+' Written By   : Dani Sapfirov
+' Date Created : 21/10/2009 16:00:36 PM
+' Rev. History :
+' Comments     :
+'--------------------------------------------------------------------------
+
+' ------------------------
+' SELECT fields from DB
+' ------------------------
+Public Function SelectDBFields(ByRef Fields As String, _
+                           ByRef TableName As String, _
+                           ByRef strWhere As String) As Long
+On Error GoTo SelectDBFields_Err
+' Read from database
+
+' Assume failure
+SelectDBFields = 0
+
+Items() = ""
+
+' Increase DBAccess counter
+DBHits() = DBHits() + 1
+
+' Read from database
+If DBLookUps(Fields, TableName, strWhere) Then
+    ''SelectDBFields = mUtils.CountItems(mItems, Chr$(13))
+    SelectDBFields = CountItems(Items(), Chr$(13))
+' Else
+'   SelectDBFields = 0
+End If
+    
+WrapUp:
+
+SelectDBFields_Exit:
+    Exit Function
+SelectDBFields_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.SelectDBFields"
+    Resume SelectDBFields_Exit
+End Function
+
+
+' ------------------------
+' UPDATE single field
+' ------------------------
+Public Function UpdateField(ByVal NewValue As Variant, _
+                           ByRef FieldName As String, _
+                           ByRef TableName As String, _
+                           Optional ByRef strWhere As String) As Boolean
+On Error GoTo UpdateField_Err
+
+' 1. Init Return Value
+' Assume Failure
+UpdateField = False
+
+' 2. Declare/Init Variables. 3. Compile Domain/Key
+Dim vKey As Variant
+vKey = CStr(FieldName) & ";" & CStr(TableName) & ";" & CStr(strWhere)
+
+' 4. Cache Read
+If Exist(vKey) Then
+    ' 4.1 Remove outdated items from Cache
+    Call Remove(vKey)
+End If
+
+DBHits() = DBHits() + 1
+
+' Update
+If DBUpdate(NewValue, FieldName, TableName, strWhere) Then
+    ' Add to collection for later use
+    ' Call Add(CStr(NewValue), vKey)
+    If Add(Items() & "~" & CStr(Timer), vKey) Then UpdateField = True
+End If
+
+WrapUp:
+
+UpdateField_Exit:
+    Exit Function
+
+UpdateField_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.UpdateField"
+    Resume UpdateField_Exit
+End Function
+
+Public Function UpdateFieldTX(ByRef conConnection As ADODB.Connection, _
+                              ByRef flgTransGo As Boolean, _
+                              ByVal NewValue As Variant, _
+                              ByRef FieldName As String, _
+                              ByRef TableName As String, _
+                              Optional ByRef strWhere As String) As Boolean
+On Error GoTo UpdateFieldTX_Err
+
+' 1. Init Return Value
+' Assume Failure
+UpdateFieldTX = False: flgTransGo = False
+
+' 2. Declare/Init Variables. 3. Compile Domain/Key
+Dim vKey As Variant
+vKey = CStr(FieldName) & ";" & CStr(TableName) & ";" & CStr(strWhere)
+
+' 4. Cache Read
+If Exist(vKey) Then
+    ' 4.1 Remove outdated items from Cache
+    Call Remove(vKey)
+End If
+
+DBHits() = DBHits() + 1
+
+' Update
+If DBUpdateTX(conConnection, flgTransGo, NewValue, FieldName, TableName, strWhere) Then
+    ' Add to collection for later use
+    ' Call Add(CStr(NewValue), vKey)
+    If Add(Items() & "~" & CStr(Timer), vKey) Then
+        UpdateFieldTX = True: flgTransGo = True
+    End If
+End If
+
+WrapUp:
+
+UpdateFieldTX_Exit:
+    Exit Function
+
+UpdateFieldTX_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.UpdateFieldTX"
+    Resume UpdateFieldTX_Exit
+End Function
+
+Public Function DBUpdate(ByVal NewValue As Variant, _
+                             FieldName As String, _
+                             TableName As String, _
+                             Optional strWhere As String) As Boolean
+On Error GoTo DBUpdate_Err
+' Purpose: Update field
+
+DBUpdate = False
+
+Select Case VarType(NewValue)
+
+    Case vbBoolean, vbByte, vbInteger, vbLong, vbSingle, vbDouble
+    
+        If Len(strWhere) Then
+            StrSQL = " UPDATE [" & TableName & "] " & _
+            " SET [" & FieldName & "] = " & NewValue & _
+            " WHERE " & strWhere
+        Else
+            StrSQL = " UPDATE [" & TableName & "] " & _
+            " SET [" & FieldName & "] = " & NewValue
+        End If
+        
+    Case vbString
+    
+        If Len(strWhere) Then
+            StrSQL = " UPDATE [" & TableName & "] " & _
+            " SET [" & FieldName & "] = " & "'" & NewValue & "'" & _
+            " WHERE " & strWhere
+        Else
+            StrSQL = " UPDATE [" & TableName & "] " & _
+            " SET [" & FieldName & "] = " & "'" & NewValue & "'"
+        End If
+        
+     Case vbDate
+    
+        If Len(strWhere) Then
+            StrSQL = " UPDATE [" & TableName & "] " & _
+            " SET [" & FieldName & "] = " & SQLDate(NewValue) & _
+            " WHERE " & strWhere
+        Else
+            StrSQL = " UPDATE [" & TableName & "] " & _
+            " SET [" & FieldName & "] = " & SQLDate(NewValue)
+        End If
+
+    Case Else
+        Call MsgBox("clsCache: Out of range error", _
+                vbInformation + vbOKOnly, "Operation cancelled" & "!")
+                
+End Select
+
+Set conConnection = CurrentProject.Connection
+conConnection.Execute StrSQL, iAffected, adExecuteNoRecords
+
+StrSQL = "SELECT [" & FieldName & "] FROM [" & TableName & "] WHERE " & strWhere
+
+Set rst = New ADODB.Recordset
+rst.Open StrSQL, conConnection, adOpenForwardOnly, adLockReadOnly, adCmdText
+
+If Not rst.BOF Then
+    rst.MoveFirst
+    Items() = CStr(Nz(rst(0), "NULL"))
+   
+    ' Success
+    DBUpdate = True
+Else
+    Items() = ""
+End If
+
+WrapUp:
+rst.Close
+conConnection.Close
+
+DBUpdate_Exit:
+    Set rst = Nothing
+    Set conConnection = Nothing
+    Exit Function
+
+DBUpdate_Err:
+    If Not rst Is Nothing Then
+        If rst.State = adStateOpen Then rst.Close
+    End If
+    If Not conConnection Is Nothing Then
+        If conConnection.State = adStateOpen Then conConnection.Close
+    End If
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.DBUpdate"
+    Resume DBUpdate_Exit
+End Function
+
+Public Function DBUpdateTX(ByRef conConnection As ADODB.Connection, _
+                                ByRef flgTransGo As Boolean, _
+                                ByVal NewValue As Variant, _
+                                FieldName As String, _
+                                TableName As String, _
+                                Optional strWhere As String) As Boolean
+On Error GoTo DBUpdateTX_Err
+' Purpose: Update field
+
+DBUpdateTX = False: flgTransGo = False
+
+Select Case VarType(NewValue)
+
+    Case vbBoolean, vbByte, vbInteger, vbLong, vbSingle, vbDouble
+    
+        If Len(strWhere) Then
+            StrSQL = " UPDATE [" & TableName & "] " & _
+            " SET [" & FieldName & "] = " & NewValue & _
+            " WHERE " & strWhere
+        Else
+            StrSQL = " UPDATE [" & TableName & "] " & _
+            " SET [" & FieldName & "] = " & NewValue
+        End If
+        
+    Case vbString
+    
+        If Len(strWhere) Then
+            StrSQL = " UPDATE [" & TableName & "] " & _
+            " SET [" & FieldName & "] = " & "'" & NewValue & "'" & _
+            " WHERE " & strWhere
+        Else
+            StrSQL = " UPDATE [" & TableName & "] " & _
+            " SET [" & FieldName & "] = " & "'" & NewValue & "'"
+        End If
+        
+     Case vbDate
+    
+        If Len(strWhere) Then
+            StrSQL = " UPDATE [" & TableName & "] " & _
+            " SET [" & FieldName & "] = " & SQLDate(NewValue) & _
+            " WHERE " & strWhere
+        Else
+            StrSQL = " UPDATE [" & TableName & "] " & _
+            " SET [" & FieldName & "] = " & SQLDate(NewValue)
+        End If
+
+    Case Else
+        Call MsgBox("clsCache: Out of range error", _
+                vbInformation + vbOKOnly, "Operation cancelled" & "!")
+                
+End Select
+
+''conConnection.Execute strSQL, iAffected, adExecuteNoRecords
+If Not uRunSQLTX(conConnection, flgTransGo, StrSQL) Then Exit Function
+
+StrSQL = "SELECT [" & FieldName & "] FROM [" & TableName & "] WHERE " & strWhere
+
+Set rst = New ADODB.Recordset
+rst.Open StrSQL, conConnection, adOpenForwardOnly, adLockReadOnly, adCmdText
+
+If Not rst.BOF Then
+    rst.MoveFirst
+    Items() = CStr(Nz(rst(0), "NULL"))
+   
+    ' Success
+    DBUpdateTX = True: flgTransGo = True
+Else
+    Items() = ""
+End If
+
+WrapUp:
+rst.Close
+
+DBUpdateTX_Exit:
+    Set rst = Nothing
+    Exit Function
+
+DBUpdateTX_Err:
+    If Not rst Is Nothing Then
+        If rst.State = adStateOpen Then rst.Close
+    End If
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.DBUpdateTX"
+    Resume DBUpdateTX_Exit
+End Function
+
+
+Public Function DBUpdates(ByRef strNewValues As String, _
+                                ByRef strVarTypes As String, _
+                                ByRef FieldNames As String, _
+                                ByRef TableName As String, _
+                                ByRef strWhere As String) As Long
+On Error GoTo DBUpdates_Err
+
+' Assume Failure
+DBUpdates = 0
+
+intArgs = CountItems(FieldNames)
+ReDim strgetOpenArg(intArgs)                  ' Arguments
+ReDim strgetOpenArgVarTypes(intArgs)          ' VarTypes
+ReDim strgetOpenArgFields(intArgs)            ' Fields
+
+' Replace non updateble fields with Null
+For idx = 0 To intArgs - 1
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Boolean", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Byte", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Integer", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Long", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Single", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Double", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "String", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Date", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "NULL", "Null")
+Next
+
+'----------------
+' 18 Jan 2020
+' Init SQL Related Strings
+strgetOpenArg = Split(strNewValues, Chr$(13))     ' NewValues, Arguments
+strgetOpenArgVarTypes = Split(strVarTypes, ",")   ' VarTypes
+strgetOpenArgFields = Split(FieldNames, ",")      ' Fields
+'----------------
+
+'----------------
+' Setup SQL
+StrSQL = " UPDATE [" & TableName & "]"
+
+Dim i As Long
+For i = 0 To intArgs - 1
+     ' VarTypes and Values
+    Select Case strgetOpenArgVarTypes(i)
+    Case "Boolean"
+        StrSQL = StrSQL & " SET [" & strgetOpenArgFields(i) & "]= " & CBool(strgetOpenArg(i))
+        Exit For
+    Case "Byte"
+        StrSQL = StrSQL & " SET [" & strgetOpenArgFields(i) & "]= " & CByte(strgetOpenArg(i))
+        Exit For
+    Case "Integer"
+        StrSQL = StrSQL & " SET [" & strgetOpenArgFields(i) & "]= " & CInt(strgetOpenArg(i))
+        Exit For
+    Case "Long"
+        StrSQL = StrSQL & " SET [" & strgetOpenArgFields(i) & "]= " & CLng(strgetOpenArg(i))
+        Exit For
+    Case "Single"
+        StrSQL = StrSQL & " SET [" & strgetOpenArgFields(i) & "]= " & CSng(strgetOpenArg(i))
+        Exit For
+    Case "Double"
+        StrSQL = StrSQL & " SET [" & strgetOpenArgFields(i) & "]= " & CDbl(strgetOpenArg(i))
+        Exit For
+    
+    Case "String"
+        StrSQL = StrSQL & " SET [" & strgetOpenArgFields(i) & "]= " & "'" & strgetOpenArg(i) & "'"
+        Exit For
+    Case "Date"
+        StrSQL = StrSQL & " SET [" & strgetOpenArgFields(i) & "]= " & SQLDate(strgetOpenArg(i))
+        Exit For
+    Case "NULL"
+        '
+    Case Else
+        Call MsgBox("clsCache: Unknown data type" & ": " & strgetOpenArgVarTypes(i), _
+                vbInformation + vbOKOnly, "Operation cancelled" & "!")
+        
+        GoTo DBUpdates_Err
+                
+    End Select
+
+Next
+
+If i > intArgs - 1 Then GoTo DBUpdates_Err
+
+' Continue
+For idx = i + 1 To intArgs - 1
+     ' VarTypes and Values
+    Select Case strgetOpenArgVarTypes(idx)
+    Case "Boolean"
+        StrSQL = StrSQL & ", " & " [" & strgetOpenArgFields(idx) & "]= " & CBool(strgetOpenArg(idx))
+    Case "Byte"
+        StrSQL = StrSQL & ", " & " [" & strgetOpenArgFields(idx) & "]= " & CByte(strgetOpenArg(idx))
+    Case "Integer"
+        StrSQL = StrSQL & ", " & " [" & strgetOpenArgFields(idx) & "]= " & CInt(strgetOpenArg(idx))
+    Case "Long"
+        StrSQL = StrSQL & ", " & " [" & strgetOpenArgFields(idx) & "]= " & CLng(strgetOpenArg(idx))
+    Case "Single"
+        StrSQL = StrSQL & ", " & " [" & strgetOpenArgFields(idx) & "]= " & CSng(strgetOpenArg(idx))
+    Case "Double"
+        StrSQL = StrSQL & ", " & " [" & strgetOpenArgFields(idx) & "]= " & CDbl(strgetOpenArg(idx))
+        
+    Case "String"
+        StrSQL = StrSQL & ", " & " [" & strgetOpenArgFields(idx) & "]= " & "'" & strgetOpenArg(idx) & "'"
+    Case "Date"
+        StrSQL = StrSQL & ", " & " [" & strgetOpenArgFields(idx) & "]= " & SQLDate(strgetOpenArg(idx))
+    Case "NULL"
+        '
+    Case Else
+        Call MsgBox("clsSQLCache: Unknown data type" & ": " & strgetOpenArgVarTypes(idx), _
+                vbInformation + vbOKOnly, "Operation cancelled" & "!")
+                
+        GoTo DBUpdates_Err
+        
+    End Select
+Next
+   
+StrSQL = StrSQL & " WHERE " & strWhere & ";"
+
+' Setup SQL end
+'----------------
+
+'----------------
+' Execite SQL
+Set conConnection = CurrentProject.Connection
+conConnection.Execute StrSQL, iAffected, adExecuteNoRecords
+
+' Read from database
+If DBLookUps(FieldNames, TableName, strWhere) Then
+    ' Success
+    DBUpdates = CountItems(Items(), Chr$(13))    ' Return the number of items
+End If
+' Execute SQL end
+'----------------
+
+WrapUp:
+
+Exit_DBUpdates:
+    Exit Function
+
+DBUpdates_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.DBUpdates"
+    Resume Exit_DBUpdates
+End Function
+
+
+Private Function DBUpdatesTX(ByRef conConnection As ADODB.Connection, _
+                            ByRef flgTransGo As Boolean, _
+                            ByRef strNewValues As String, _
+                            ByRef strVarTypes As String, _
+                            ByRef FieldNames As String, _
+                            ByRef TableName As String, _
+                            ByRef strWhere As String) As Long
+' Purpose: Get values for FieldName1, FieldName2, FieldName3, ... from Table: TableName
+On Error GoTo DBUpdatesTX_Err
+
+' Assume Failure
+DBUpdatesTX = 0: flgTransGo = False
+
+intArgs = CountItems(FieldNames)
+
+ReDim strgetOpenArg(intArgs)                  ' Arguments
+ReDim strgetOpenArgVarTypes(intArgs)          ' VarTypes
+ReDim strgetOpenArgFields(intArgs)            ' Fields
+
+' Replace non updateble fields with Null
+For idx = 0 To intArgs - 1
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Boolean", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Byte", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Integer", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Long", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Single", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Double", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "String", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Date", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "NULL", "Null")
+Next
+
+'----------------
+' 18 Jan 2020
+' Init SQL Related Strings
+strgetOpenArg = Split(strNewValues, Chr$(13))     ' NewValues, Arguments
+strgetOpenArgVarTypes = Split(strVarTypes, ",")   ' VarTypes
+strgetOpenArgFields = Split(FieldNames, ",")      ' Fields
+'----------------
+
+'----------------
+' Setup SQL
+StrSQL = " UPDATE [" & TableName & "]"
+
+Dim i As Long
+For i = 0 To intArgs - 1
+     ' VarTypes and Values
+    Select Case strgetOpenArgVarTypes(i)
+    Case "Boolean"
+        StrSQL = StrSQL & " SET [" & strgetOpenArgFields(i) & "]= " & CBool(strgetOpenArg(i))
+        Exit For
+    Case "Byte"
+        StrSQL = StrSQL & " SET [" & strgetOpenArgFields(i) & "]= " & CByte(strgetOpenArg(i))
+        Exit For
+    Case "Integer"
+        StrSQL = StrSQL & " SET [" & strgetOpenArgFields(i) & "]= " & CInt(strgetOpenArg(i))
+        Exit For
+    Case "Long"
+        StrSQL = StrSQL & " SET [" & strgetOpenArgFields(i) & "]= " & CLng(strgetOpenArg(i))
+        Exit For
+    Case "Single"
+        StrSQL = StrSQL & " SET [" & strgetOpenArgFields(i) & "]= " & CSng(strgetOpenArg(i))
+        Exit For
+    Case "Double"
+        StrSQL = StrSQL & " SET [" & strgetOpenArgFields(i) & "]= " & CDbl(strgetOpenArg(i))
+        Exit For
+    
+    Case "String"
+        StrSQL = StrSQL & " SET [" & strgetOpenArgFields(i) & "]= " & "'" & strgetOpenArg(i) & "'"
+        Exit For
+    Case "Date"
+        StrSQL = StrSQL & " SET [" & strgetOpenArgFields(i) & "]= " & SQLDate(strgetOpenArg(i))
+        Exit For
+    Case "NULL"
+        '
+    Case Else
+        Call MsgBox("clsCache: Unknown data type" & ": " & strgetOpenArgVarTypes(i), _
+                vbInformation + vbOKOnly, "Operation cancelled" & "!")
+                
+        GoTo DBUpdatesTX_Err
+        
+    End Select
+Next
+
+If i > intArgs - 1 Then GoTo DBUpdatesTX_Err
+
+' Continue
+For idx = i + 1 To intArgs - 1
+     ' VarTypes and Values
+    Select Case strgetOpenArgVarTypes(idx)
+    Case "Boolean"
+        StrSQL = StrSQL & ", " & " [" & strgetOpenArgFields(idx) & "]= " & CBool(strgetOpenArg(idx))
+    Case "Byte"
+        StrSQL = StrSQL & ", " & " [" & strgetOpenArgFields(idx) & "]= " & CByte(strgetOpenArg(idx))
+    Case "Integer"
+        StrSQL = StrSQL & ", " & " [" & strgetOpenArgFields(idx) & "]= " & CInt(strgetOpenArg(idx))
+    Case "Long"
+        StrSQL = StrSQL & ", " & " [" & strgetOpenArgFields(idx) & "]= " & CLng(strgetOpenArg(idx))
+    Case "Single"
+        StrSQL = StrSQL & ", " & " [" & strgetOpenArgFields(idx) & "]= " & CSng(strgetOpenArg(idx))
+    Case "Double"
+        StrSQL = StrSQL & ", " & " [" & strgetOpenArgFields(idx) & "]= " & CDbl(strgetOpenArg(idx))
+        
+    Case "String"
+        StrSQL = StrSQL & ", " & " [" & strgetOpenArgFields(idx) & "]= " & "'" & strgetOpenArg(idx) & "'"
+    Case "Date"
+        StrSQL = StrSQL & ", " & " [" & strgetOpenArgFields(idx) & "]= " & SQLDate(strgetOpenArg(idx))
+    Case "NULL"
+        '
+    Case Else
+        Call MsgBox("clsSQLCache: Unknown data type" & ": " & strgetOpenArgVarTypes(idx), _
+                vbInformation + vbOKOnly, "Operation cancelled" & "!")
+                
+        GoTo DBUpdatesTX_Err
+        
+    End Select
+Next idx
+    
+StrSQL = StrSQL & " WHERE " & strWhere & ";"
+
+''conConnection.Execute strSQL, iAffected, adExecuteNoRecords
+If Not uRunSQLTX(conConnection, flgTransGo, StrSQL) Then Exit Function
+
+DBHits() = DBHits() + 1
+
+' Read from database
+If DBLookUpsTX(conConnection, flgTransGo, FieldNames, TableName, strWhere) Then
+    ' Success
+
+    ' Add to collection for later use
+    strgetOpenArg = Split(Items(), "~")                     ' Extract new data
+    ''DBUpdatesTX = mUtils.CountItems(Items(), Chr$(13))
+    DBUpdatesTX = CountItems(Items(), Chr$(13))    ' Return the number of items
+    flgTransGo = True                                     ' Transaction success
+
+End If
+
+WrapUp:
+
+Exit_DBUpdatesTX:
+    Exit Function
+
+DBUpdatesTX_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.DBUpdatesTX"
+    Resume Exit_DBUpdatesTX
+End Function
+
+' ------------------------
+' Add New Record to table
+' ------------------------
+Public Function AddNew(ByRef strNewValues As String, _
+                       ByRef strVarTypes As String, _
+                       ByRef FieldNames As String, _
+                       ByRef TableName As String, _
+                       ByRef strWhere As String) As Boolean
+On Error GoTo AddNew_Err
+' Add New Record
+
+' 1. Init Return Value
+' Assume Failure
+AddNew = False
+
+' 2. Declare/Init Variables. 3. Compile Domain/Key
+Dim vKey As Variant
+vKey = CStr(FieldNames) & ";" & CStr(TableName) & ";" & CStr(strWhere)
+
+' 4. Cache Read
+If Exist(vKey) Then
+    ' 4.1 Remove outdated items from Cache
+    Call Remove(vKey)
+End If
+
+' Insert
+If DBAddNew(strNewValues, strVarTypes, FieldNames, TableName, strWhere) Then
+    ' Add to collection for later use
+    ' Call Add(CStr(NewValue), vKey)
+    If Add(Items() & "~" & CStr(Timer), vKey) Then AddNew = True
+    ' Call mCHive.Add(Items() & "~" & CStr(Timer), vKey)
+        
+End If
+
+WrapUp:
+
+AddNew_Exit:
+    Exit Function
+
+AddNew_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.AddNew"
+    Resume AddNew_Exit
+End Function
+
+
+Public Function AddNewTX(ByRef conConnection As ADODB.Connection, _
+                       ByRef flgTransGo As Boolean, _
+                       ByRef strNewValues As String, _
+                       ByRef strVarTypes As String, _
+                       ByRef FieldNames As String, _
+                       ByRef TableName As String, _
+                       ByRef strWhere As String) As Boolean
+On Error GoTo AddNewTX_Err
+' Add New Record
+
+' 1. Init Return Value
+' Assume Failure
+AddNewTX = False
+
+' 2. Declare/Init Variables. 3. Compile Domain/Key
+Dim vKey As Variant
+vKey = CStr(FieldNames) & ";" & CStr(TableName) & ";" & CStr(strWhere)
+
+' 4. Cache Read
+If Exist(vKey) Then
+    ' 4.1 Remove outdated items from Cache
+    Call Remove(vKey)
+End If
+
+' Insert
+If DBAddNewTX(conConnection, flgTransGo, strNewValues, strVarTypes, FieldNames, TableName, strWhere) Then
+    ' Add to collection for later use
+    ' Call Add(CStr(NewValue), vKey)
+    If Add(Items() & "~" & CStr(Timer), vKey) Then AddNewTX = True
+    ' Call mCHive.Add(Items() & "~" & CStr(Timer), vKey)
+        
+End If
+
+WrapUp:
+
+AddNewTX_Exit:
+    Exit Function
+
+AddNewTX_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.AddNewTX"
+    Resume AddNewTX_Exit
+End Function
+
+
+Private Function DBAddNew(ByRef strNewValues As String, _
+                       ByRef strVarTypes As String, _
+                       ByRef FieldNames As String, _
+                       ByRef TableName As String, _
+                       ByRef strWhere As String) As Long
+' Purpose: Get values for FieldName1, FieldName2, FieldName3, ... from Table: TableName
+On Error GoTo DBAddNew_Err
+
+' Assume Failure
+DBAddNew = 0
+
+intArgs = CountItems(FieldNames)
+ReDim strgetOpenArg(intArgs)                  ' NewValues
+ReDim strgetOpenArgVarTypes(intArgs)          ' VarTypes
+ReDim strgetOpenArgFields(intArgs)            ' Fields
+
+' Replace non updateble fields with Null
+For idx = 0 To intArgs - 1
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Boolean", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Byte", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Integer", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Long", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Single", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Double", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "String", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Date", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "NULL", "Null")
+Next
+
+'----------------
+' 18 Jan 2020
+' Init SQL Related Strings
+strgetOpenArg = Split(strNewValues, Chr$(13))     ' NewValues, Arguments
+strgetOpenArgVarTypes = Split(strVarTypes, ",")   ' VarTypes
+strgetOpenArgFields = Split(FieldNames, ",")      ' Fields
+'----------------
+
+'----------------
+' Setup SQL
+
+StrSQL = " INSERT INTO [" & TableName & "] (" & FieldNames & ") VALUES ("
+
+Dim strSQL1 As String
+
+For idx = 0 To intArgs - 1
+    
+    If idx < 1 Then
+        ' Meta types and Values
+        Select Case strgetOpenArgVarTypes(idx)
+        Case "Boolean"
+            strSQL1 = strSQL1 & CBool(strgetOpenArg(idx))
+        Case "Byte"
+            strSQL1 = strSQL1 & CByte(strgetOpenArg(idx))
+        Case "Integer"
+            strSQL1 = strSQL1 & CInt(strgetOpenArg(idx))
+        Case "Long"
+            strSQL1 = strSQL1 & CLng(strgetOpenArg(idx))
+        Case "Single"
+            strSQL1 = strSQL1 & CSng(strgetOpenArg(idx))
+        Case "Double"
+            strSQL1 = strSQL1 & CDbl(strgetOpenArg(idx))
+            
+        Case "String"
+            strSQL1 = strSQL1 & "'" & strgetOpenArg(idx) & "'"
+        Case "Date"
+            strSQL1 = strSQL1 & SQLDate(strgetOpenArg(idx))
+        Case "NULL"
+            '
+        Case Else
+            Call MsgBox(ModuleName$ & ".DBAddNew: Unknown data type" & ": " & strgetOpenArgVarTypes(idx), _
+                    vbInformation + vbOKOnly, "Operation cancelled" & "!")
+            GoTo DBAddNew_Err
+        End Select
+    
+    Else
+        ' Meta types and Values
+        Select Case strgetOpenArgVarTypes(idx)
+        Case "Boolean"
+            strSQL1 = strSQL1 & ", " & CBool(strgetOpenArg(idx))
+        Case "Byte"
+            strSQL1 = strSQL1 & ", " & CByte(strgetOpenArg(idx))
+        Case "Integer"
+            strSQL1 = strSQL1 & ", " & CInt(strgetOpenArg(idx))
+        Case "Long"
+            strSQL1 = strSQL1 & ", " & CLng(strgetOpenArg(idx))
+        Case "Single"
+            strSQL1 = strSQL1 & ", " & CSng(strgetOpenArg(idx))
+        Case "Double"
+            strSQL1 = strSQL1 & ", " & CDbl(strgetOpenArg(idx))
+            
+        Case "String"
+            strSQL1 = strSQL1 & ", " & "'" & strgetOpenArg(idx) & "'"
+        Case "Date"
+            strSQL1 = strSQL1 & ", " & SQLDate(strgetOpenArg(idx))
+        Case "NULL"
+            '
+        Case Else
+            Call MsgBox(ModuleName$ & ".DBAddNew: Unknown data type" & ": " & strgetOpenArgVarTypes(idx), _
+                    vbInformation + vbOKOnly, "Operation cancelled" & "!")
+            GoTo DBAddNew_Err
+        End Select
+        
+    End If
+    
+Next idx
+  
+StrSQL = StrSQL & strSQL1 & ");"
+
+Set conConnection = CurrentProject.Connection
+conConnection.Execute StrSQL, iAffected, adExecuteNoRecords
+
+DBHits() = DBHits() + 1
+
+' Read from database
+If DBLookUps(FieldNames, TableName, strWhere) Then
+    ' Success
+    DBAddNew = CountItems(Items(), Chr$(13))    ' Return the number of items
+End If
+
+WrapUp:
+
+Exit_DBAddNew:
+    Exit Function
+
+DBAddNew_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.DBAddNew"
+    Resume Exit_DBAddNew
+End Function
+
+Private Function DBAddNewTX(ByRef conConnection As ADODB.Connection, _
+                         ByRef flgTransGo As Boolean, _
+                         ByRef strNewValues As String, _
+                         ByRef strVarTypes As String, _
+                         ByRef FieldNames As String, _
+                         ByRef TableName As String, _
+                         ByRef strWhere As String) As Long
+' Purpose: Get values for FieldName1, FieldName2, FieldName3, ... from Table: TableName
+On Error GoTo DBAddNewTX_Err
+
+' Assume Failure
+DBAddNewTX = 0: flgTransGo = False
+
+intArgs = CountItems(FieldNames)
+ReDim strgetOpenArg(intArgs)                  ' NewValues
+ReDim strgetOpenArgVarTypes(intArgs)          ' VarTypes
+ReDim strgetOpenArgFields(intArgs)            ' Fields
+
+' Replace non updateble fields with Null
+For idx = 0 To intArgs - 1
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Boolean", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Byte", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Integer", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Long", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Single", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Double", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "String", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "Date", "Null")
+    strVarTypes = strReplace(strVarTypes, CStr(Format(idx, "00")) & "NULL", "Null")
+Next
+
+'----------------
+' 18 Jan 2020
+' Init SQL Related Strings
+strgetOpenArg = Split(strNewValues, Chr$(13))     ' NewValues, Arguments
+strgetOpenArgVarTypes = Split(strVarTypes, ",")   ' VarTypes
+strgetOpenArgFields = Split(FieldNames, ",")      ' Fields
+'----------------
+
+'----------------
+' Setup SQL
+
+StrSQL = " INSERT INTO [" & TableName & "] (" & FieldNames & ") VALUES ("
+
+Dim strSQL1 As String
+
+For idx = 0 To intArgs - 1
+    
+    If idx < 1 Then
+        ' Meta types and Values
+        Select Case strgetOpenArgVarTypes(idx)
+        Case "Boolean"
+            strSQL1 = strSQL1 & CBool(strgetOpenArg(idx))
+        Case "Byte"
+            strSQL1 = strSQL1 & CByte(strgetOpenArg(idx))
+        Case "Integer"
+            strSQL1 = strSQL1 & CInt(strgetOpenArg(idx))
+        Case "Long"
+            strSQL1 = strSQL1 & CLng(strgetOpenArg(idx))
+        Case "Single"
+            strSQL1 = strSQL1 & CSng(strgetOpenArg(idx))
+        Case "Double"
+            strSQL1 = strSQL1 & CDbl(strgetOpenArg(idx))
+            
+        Case "String"
+            strSQL1 = strSQL1 & "'" & strgetOpenArg(idx) & "'"
+        Case "Date"
+            strSQL1 = strSQL1 & SQLDate(strgetOpenArg(idx))
+        Case "NULL"
+            '
+        Case Else
+            Call MsgBox(ModuleName$ & ".DBAddNewTX: Unknown data type" & ": " & strgetOpenArgVarTypes(idx), _
+                    vbInformation + vbOKOnly, "Operation cancelled" & "!")
+            GoTo DBAddNewTX_Err
+        End Select
+    
+    Else
+        ' Meta types and Values
+        Select Case strgetOpenArgVarTypes(idx)
+        Case "Boolean"
+            strSQL1 = strSQL1 & ", " & CBool(strgetOpenArg(idx))
+        Case "Byte"
+            strSQL1 = strSQL1 & ", " & CByte(strgetOpenArg(idx))
+        Case "Integer"
+            strSQL1 = strSQL1 & ", " & CInt(strgetOpenArg(idx))
+        Case "Long"
+            strSQL1 = strSQL1 & ", " & CLng(strgetOpenArg(idx))
+        Case "Single"
+            strSQL1 = strSQL1 & ", " & CSng(strgetOpenArg(idx))
+        Case "Double"
+            strSQL1 = strSQL1 & ", " & CDbl(strgetOpenArg(idx))
+            
+        Case "String"
+            strSQL1 = strSQL1 & ", " & "'" & strgetOpenArg(idx) & "'"
+        Case "Date"
+            strSQL1 = strSQL1 & ", " & SQLDate(strgetOpenArg(idx))
+        Case "NULL"
+            '
+        Case Else
+            Call MsgBox(ModuleName$ & ".AddDB: Unknown data type" & ": " & strgetOpenArgVarTypes(idx), _
+                    vbInformation + vbOKOnly, "Operation cancelled" & "!")
+            GoTo DBAddNewTX_Err
+        End Select
+        
+    End If
+    
+Next idx
+  
+StrSQL = StrSQL & strSQL1 & ");"
+
+''Set conConnection = CurrentProject.Connection
+''conConnection.Execute strSQL, iAffected, adExecuteNoRecords
+If Not uRunSQLTX(conConnection, flgTransGo, StrSQL) Then Exit Function
+
+DBHits() = DBHits() + 1
+
+' Read from database
+If DBLookUpsTX(conConnection, flgTransGo, FieldNames, TableName, strWhere) Then
+    ' Success
+    DBAddNewTX = CountItems(Items(), Chr$(13))      ' Return the number of items
+    flgTransGo = True                               ' Transaction success
+End If
+
+WrapUp:
+
+Exit_DBAddNewTX:
+    Exit Function
+
+DBAddNewTX_Err:
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.DBAddNewTX"
+    Resume Exit_DBAddNewTX
+End Function
+
+
+Private Function acbFixUp(ByVal varValue As Variant) As Variant
+
+   ' Add the appropriate delimiters, depending on the data type.
+   ' Put quotes around text, #s around dates, and nothing
+   ' around numeric values.
+   ' If you're using equality in your expression, you should
+   ' use Basic's BuildCriteria function instead of calling
+   ' this function.
+   Const conQuote = """"
+
+   Select Case VarType(varValue)
+      Case vbInteger, vbSingle, vbDouble, vbLong, vbCurrency
+         acbFixUp = CStr(varValue)
+      Case vbString
+         acbFixUp = conQuote & varValue & conQuote
+      Case vbDate
+         acbFixUp = "#" & varValue & "#"
+      Case Else
+         acbFixUp = Null
+   End Select
+End Function
+
+Public Function DBLookUpsTX(ByRef conConnection As ADODB.Connection, _
+                           ByRef flgTransGo As Boolean, _
+                           ByRef Fields As String, _
+                           ByRef TableName As String, _
+                           ByRef strWhere As String) As Long
+' Purpose: Get values for FieldName1, FieldName2, FieldName3, ... from Table: TableName
+On Error GoTo DBLookUpsTX_Err
+
+' Assume Failure
+DBLookUpsTX = 0: flgTransGo = False
+
+intArgs = CountItems(Fields)
+ReDim strgetOpenArg(intArgs)
+strgetOpenArg = Split(Fields, ",")
+
+' Compile SQL string
+StrSQL = " SELECT [" & strgetOpenArg(0) & "]"
+If intArgs > 0 Then
+    For idx = 1 To intArgs - 1
+        StrSQL = StrSQL & "," & "[" & strgetOpenArg(idx) & "]"
+    Next idx
+End If
+
+StrSQL = StrSQL & " FROM [" & TableName & "]"
+StrSQL = StrSQL & " WHERE " & strWhere & ";"
+
+Set rst = New ADODB.Recordset
+rst.Open StrSQL, conConnection, adOpenForwardOnly, adLockReadOnly, adCmdText
+
+If Not rst.BOF Then
+    rst.MoveFirst
+    Items() = CStr(Nz(rst(0), "NULL"))
+    For idx = 1 To intArgs - 1
+        Items() = Items() & Chr$(13) & CStr(Nz(rst(idx), "NULL"))
+    Next idx
+    
+    ' Success
+    ''DBLookUpsTX = mUtils.CountItems(Items(), Chr$(13))
+    DBLookUpsTX = CountItems(Items(), Chr$(13)) ' Return the number of items
+    flgTransGo = True                             ' Transaction success
+Else
+    ' not tested
+    Items() = ""
+''    For idx = 2 To intArgs
+''        mItems = mItems & "," & ""
+''    Next idx
+End If
+
+WrapUp:
+rst.Close
+
+Exit_DBLookUpsTX:
+    Set rst = Nothing
+    Exit Function
+
+DBLookUpsTX_Err:
+    flgTransGo = False
+    If Not rst Is Nothing Then
+        If rst.State = adStateOpen Then rst.Close
+    End If
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.DBLookUpsTX"
+    Resume Exit_DBLookUpsTX
+End Function
+
+
+Public Function DBLookUps(ByRef Fields As String, _
+                          ByRef TableName As String, _
+                          ByRef strWhere As String) As Long
+'-----------
+On Error GoTo DBLookUps_Err
+' Purpose:
+' Get values for the FieldName1, FieldName2, FieldName3, ...
+' From Table: TableName
+' Using criteria strWhere
+' Copy them to Items string
+' Items are separated using delimeter Chr$(13)
+
+' Assume Failure
+DBLookUps = 0
+Items() = ""
+
+intArgs = CountItems(Fields)
+ReDim strgetOpenArg(intArgs)
+strgetOpenArg = Split(Fields, ",")
+
+' Compile SQL string
+StrSQL = " SELECT [" & strgetOpenArg(0) & "]"
+If intArgs > 0 Then
+    For idx = 1 To intArgs - 1
+        StrSQL = StrSQL & "," & "[" & strgetOpenArg(idx) & "]"
+    Next idx
+End If
+
+StrSQL = StrSQL & " FROM [" & TableName & "]"
+StrSQL = StrSQL & " WHERE " & strWhere & ";"
+
+Set conConnection = CurrentProject.Connection
+Set rst = New ADODB.Recordset
+rst.Open StrSQL, conConnection, adOpenForwardOnly, adLockReadOnly, adCmdText
+
+If Not rst.BOF Then
+    rst.MoveFirst
+    Items() = CStr(Nz(rst(0), "NULL"))
+    
+    For idx = 1 To intArgs - 1
+        Items() = Items() & Chr$(13) & CStr(Nz(rst(idx), "NULL"))
+    Next idx
+    ' Success
+    
+    DBLookUps = CountItems(Items(), Chr$(13))
+    '' DBLookUps = mUtils.CountItems(Items, Chr$(13))
+End If
+
+WrapUp:
+rst.Close
+conConnection.Close
+
+Exit_DBLookUps:
+    Set rst = Nothing
+    Set conConnection = Nothing
+    Exit Function
+
+DBLookUps_Err:
+    If Not rst Is Nothing Then
+        If rst.State = adStateOpen Then rst.Close
+    End If
+    If Not conConnection Is Nothing Then
+        If conConnection.State = adStateOpen Then conConnection.Close
+    End If
+    MsgBox Err.Description, , "Error: " & Err.Number _
+    & " in clsCache.DBLookUps"
+    Resume Exit_DBLookUps
+End Function
+
+Private Function uRunSQLTX(ByRef conConnection As ADODB.Connection, _
+                           ByRef flgTransGo As Boolean, _
+                           ByRef StrSQL As String) As Boolean
+On Error GoTo uRunSQLTX_Err
+      
+' Assume Failure
+uRunSQLTX = False: flgTransGo = False
+
+conConnection.BeginTrans
+'conConnection.IsolationLevel = adXactCursorStability    ' Read Commited Changes Only
+conConnection.Execute StrSQL, iAffected, adExecuteNoRecords
+' Commit transaction
+conConnection.CommitTrans
+    
+WrapUp:
+' Indicate success
+uRunSQLTX = True: flgTransGo = True
+
+Exit_uRunSQLTX:
+    Exit Function
+
+uRunSQLTX_Err:
+    If Not flgTransGo Then conConnection.RollbackTrans
+    MsgBox Err.Description, "Error: " & Err.Number _
+    & " in clsCache.uRunSQLTX" & ": " & "SQL That Failed:" & vbCr & StrSQL
+    ''If Err.Number <> 3192 Then
+    ''    Call LogMsgError("SQL That Failed:" & vbCr & strSQL & _
+    ''    Err.Description, Err.Number, ModuleName$, "uRunSQL")
+    ''End If
+    Resume Exit_uRunSQLTX
+End Function
+
