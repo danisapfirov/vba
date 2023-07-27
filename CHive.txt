@@ -1,0 +1,1020 @@
+Option Compare Database
+Option Explicit
+
+' Hive Class
+' Binary Tree
+
+Private Const csClassName As String = "CHive"
+
+' Default behaviours of Hive
+Private Const DefaultInitialAlloc As Long = 100
+Private Const DefaultGrowthFactor As Double = 1.5
+
+Private GrowthFactor As Double
+Private InitialAlloc As Long
+
+' Sentinel is Node(0)
+Private Const Sentinel As Long = 0
+
+' Node Color
+Private Enum EColor
+    Black
+    Red
+End Enum
+
+' fields associated with each node
+Private Type ItemData
+  lLeft As Long          ' Left child
+  lRight As Long         ' Right child
+  lParent As Long        ' Parent
+  Color As EColor        ' red or black
+  vKey As Variant        ' item key
+  vData As Variant       ' item data
+End Type
+
+Private Items() As ItemData     ' Array to store all item
+
+' support for FindFirst and FindNext
+Private StackIndex As Integer
+Private Stack(1 To 32) As Long
+Private NextNode As Long
+
+Private Root As Long            ' root of binary tree
+Private Node As CNode           ' class for allocating nodes
+
+Private lCount As Long          ' No of items
+Private lIndex() As Long        ' Used to map items to index
+
+Private mCompareMode As VbCompareMethod
+
+Public Errors As CErrorCollection   ' Contains all the errors
+
+Public RaiseError As Boolean    ' True: Call Err.Raise; False: Don't
+Public AllowDuplicate As Boolean ' True: Allow duplicate; False: Don't
+
+' GUID Key generation code
+Private Declare Function CoCreateGuid Lib _
+    "OLE32.DLL" (pGuid As GUID) As Long
+Private Declare Function StringFromGUID2 Lib _
+    "OLE32.DLL" (pGuid As GUID, _
+    ByVal PointerToString As Long, _
+    ByVal MaxLength As Long) As Long
+
+' GUID Result
+Private Const GUID_OK As Long = 0
+
+' Structure to hold GUID
+Private Type GUID
+    Guid1           As Long             ' 32 bit
+    Guid2           As Integer          ' 16 bit
+    Guid3           As Integer          ' 16 bit
+    Guid4(0 To 7)   As Byte             ' 64 bit
+End Type
+
+' For Raw memory copy
+Private Declare Sub MoveMemory Lib "kernel32" _
+      Alias "RtlMoveMemory" (dest As Long, _
+    Source As Long, ByVal numBytes As Long)
+
+Public Property Get Ver() As String
+    ' CHive version
+    Ver = "BTree, 2021-Jan-30"
+    
+End Property
+
+Private Function CreateGUIDKey() As String
+    Const GUID_LENGTH   As Long = 38
+
+    Dim udtGUID As GUID
+    'User Defined Type
+    Dim strFormattedGUID As String
+    'The formatted string
+    Dim lngResult As Long
+    'Useless result flag
+
+    ' Create a GUID
+    lngResult = CoCreateGuid(udtGUID)
+
+    If lngResult = GUID_OK Then
+        ' Pre-allocate space for the ID
+        strFormattedGUID = String$(GUID_LENGTH, 0)
+        ' Convert the GUID to a
+        'formatted string
+        StringFromGUID2 udtGUID, _
+            StrPtr(strFormattedGUID), GUID_LENGTH + 1
+    Else
+        strFormattedGUID = ""
+    End If
+    CreateGUIDKey = strFormattedGUID
+    
+End Function
+
+Private Function GetKeyIndex(ByVal vKey As Variant) As Long
+'   inputs:
+'       vKeysVal          vKeys of the node
+'   returns:
+'       the index of the item in the Array
+
+    Select Case VarType(vKey)
+    
+        Case vbByte, vbInteger, vbLong
+            If vKey < 0 Or vKey > lCount Then
+                Raise [Invalid Index], "GetIndex"
+            Else
+                GetKeyIndex = lIndex(vKey)
+            End If
+        Case Else
+            GetKeyIndex = FindNode(vKey)
+            If GetKeyIndex = 0 Then Raise [Key not Found], "FindNode"
+    End Select
+    
+End Function
+
+Private Function GetIndex(ByVal KeyIndex As Long) As Long
+    
+    Dim i As Long
+    
+    For i = 1 To lCount
+        If lIndex(i) = KeyIndex Then
+            GetIndex = i
+            Exit Function
+        End If
+    Next
+End Function
+
+
+Private Function FindNode(ByVal KeyVal As Variant) As Long
+'   inputs:
+'       Key                   ' designates key to find
+'   returns:
+'       index to node
+'   action:
+'       Search tree for designated key, and return index to node.
+'   errors:
+'       Key Not Found
+'
+    Dim Current As Long
+
+    ' find node specified by key
+    Current = Root
+    
+    ' ------------------------------------
+    ' if compare mode is binary
+    ' then match exact key otherwise
+    ' ignore case if key is a string
+    ' ------------------------------------
+    If mCompareMode <> vbBinaryCompare And VarType(KeyVal) = vbString Then
+      
+      ' String
+      KeyVal = LCase(KeyVal)
+      Do While Current <> Sentinel
+          
+          If LCase(Items(Current).vKey) = KeyVal Then
+              FindNode = Current
+              Exit Function
+          Else
+              If KeyVal < LCase(Items(Current).vKey) Then
+                  Current = Items(Current).lLeft
+              Else
+                  Current = Items(Current).lRight
+              End If
+          End If
+          
+      Loop
+    
+    Else
+      
+      ' Binary
+      Do While Current <> Sentinel
+          
+          If Items(Current).vKey = KeyVal Then
+              FindNode = Current
+              Exit Function
+          Else
+              If KeyVal < Items(Current).vKey Then
+                  Current = Items(Current).lLeft
+              Else
+                  Current = Items(Current).lRight
+              End If
+          End If
+          
+      Loop
+      
+    End If
+    
+End Function
+
+Public Function Find(ByVal KeyVal As Variant) As Variant
+'   inputs:
+'       Key                   ' designates key to find
+'   returns:
+'       Data to node
+'   action:
+'       Search tree for designated key, and return data to node.
+
+    ' Assume failure
+    Find = KeyVal
+    
+    Dim Current As Long
+
+    ' find node specified by key start from Root
+    Current = Sentinel
+    
+    ' ------------------------------------
+    ' if compare mode is binary
+    ' then match exact key otherwise
+    ' ignore case if key is a string
+    ' ------------------------------------
+    If mCompareMode <> vbBinaryCompare And VarType(KeyVal) = vbString Then
+         
+      ' String
+      KeyVal = LCase(KeyVal)
+      Do While Current <> Sentinel
+          
+          If LCase(Items(Current).vKey) = KeyVal Then
+              Find = Items(Current).vData
+              Exit Function
+          Else
+              If KeyVal < LCase(Items(Current).vKey) Then
+                  Current = Items(Current).lLeft
+              Else
+                  Current = Items(Current).lRight
+              End If
+          End If
+          
+      Loop
+      
+    Else
+    
+      ' Binary
+      Do While Current <> Sentinel
+          
+          If Items(Current).vKey = KeyVal Then
+              Find = Items(Current).vData
+              Exit Function
+          Else
+              If KeyVal < Items(Current).vKey Then
+                  Current = Items(Current).lLeft
+              Else
+                  Current = Items(Current).lRight
+              End If
+          End If
+          
+      Loop
+      
+    End If
+    
+End Function
+
+
+Public Function Add(ByRef Item As Variant, _
+                    Optional ByVal Key As Variant, _
+                    Optional ByVal Before As Variant, _
+                    Optional ByVal After As Variant) As Boolean
+'   inputs:
+'       Item        Item to store
+'       Key         Key to use
+'       Before      The item before which this item will be inserted
+'       After      The item After which this item will be inserted
+'   action:
+'       Inserts Item with Key.
+'   error:
+'       [Duplicate Key]
+'
+
+' Assume failure
+Add = False
+
+Dim Current As Long
+Dim p As Long
+Dim X As Long
+Dim i As Long
+Dim j As Long
+Dim lItems As Long
+Dim strTempKey As String  ' Used to store lcase key
+      
+' Validate Key
+If IsMissing(Key) Then
+    Key = CreateGUIDKey()
+Else
+    Select Case VarType(Key)
+        Case vbLong, vbInteger, vbByte
+            Raise [Key Cannot Be Integer], "Add"
+            Exit Function
+            
+        Case vbString
+            If Key = "" Then
+                Raise [Key Cannot be Blank or Zero], "Add"
+                Exit Function
+            End If
+            
+    End Select
+End If
+' allocate node for data and insert in tree
+If Node Is Nothing Then Init InitialAlloc, GrowthFactor
+
+' find where node belongs
+Current = Root
+p = 0
+
+' ---------------------------------------------------------------
+' Search hive if the key already exist. If exist then if duplicate
+' allowed then accept otherwise get out. After serching look for a
+' position where the new items key will be stored in the Red-Black
+' tree. Thank you.
+' ---------------------------------------------------------------
+If VarType(Key) = vbString Then strTempKey = LCase(Key)
+Do While Current <> Sentinel
+    
+    If mCompareMode <> vbBinaryCompare And VarType(Key) = vbString Then
+      
+      ' String
+      If LCase(Items(Current).vKey) = strTempKey Then
+          If Not AllowDuplicate Then
+              Raise [Duplicate Key], "Add"
+              Exit Function
+          End If
+      End If
+      
+      p = Current
+      If strTempKey < LCase(Items(Current).vKey) Then
+          Current = Items(Current).lLeft
+      Else
+          Current = Items(Current).lRight
+      End If
+      
+    Else
+    
+      ' Binary
+      If Items(Current).vKey = Key Then
+        If Not AllowDuplicate Then
+            Raise [Duplicate Key], "Add"
+            Exit Function
+        End If
+      End If
+      
+      p = Current
+      If Key < Items(Current).vKey Then
+          Current = Items(Current).lLeft
+      Else
+          Current = Items(Current).lRight
+      End If
+    End If
+      
+Loop
+
+' Setup new node
+X = Node.Alloc()
+lItems = UBound(Items())
+If X > lItems Then
+    ReDim Preserve Items(0 To lItems * GrowthFactor)
+    ReDim Preserve lIndex(1 To (lItems * GrowthFactor) + 2)
+End If
+
+Items(X).lParent = p
+Items(X).lLeft = Sentinel
+Items(X).lRight = Sentinel
+Items(X).Color = Red
+
+' Increase the counter.
+' Increased value is required below
+lCount = lCount + 1
+
+' Adjust position
+If Not IsMissing(Before) Then
+    Before = GetKeyIndex(Before)
+    If Before = 0 Then
+        Raise [Key not Found], "Add"
+        Exit Function
+    End If
+    i = GetIndex(Before)
+    InsertItem i
+    lIndex(i) = X
+    
+ElseIf Not IsMissing(After) Then
+    After = GetKeyIndex(After)
+    If After = 0 Then
+        Raise [Key not Found], "Add"
+        Exit Function
+    End If
+    i = GetIndex(After) + 1
+    InsertItem i
+    lIndex(i) = X
+Else
+    lIndex(lCount) = X
+End If
+
+' Copy fields to node
+Items(X).vKey = Key
+If IsObject(Item) Then
+    Set Items(X).vData = Item
+Else
+    Items(X).vData = Item
+End If
+
+' Insert node in tree
+If p <> 0 Then
+    If mCompareMode <> vbBinaryCompare And VarType(Key) = vbString Then
+      
+      ' String
+      If strTempKey < LCase(Items(p).vKey) Then
+          Items(p).lLeft = X
+      Else
+          Items(p).lRight = X
+      End If
+      
+    Else
+    
+      ' Binary
+      If Key < Items(p).vKey Then
+        Items(p).lLeft = X
+      Else
+        Items(p).lRight = X
+      End If
+    End If
+    
+Else
+    Root = X
+End If
+
+InsertFixup X
+
+' Indicate Success
+Add = True
+    
+End Function
+
+
+Private Sub RotateLeft(ByVal X As Long)
+'   inputs:
+'       x                     designates node
+'   action:
+'       perform a lLeft tree rotation about "x"
+'
+    Dim Y As Long
+
+    ' rotate node x to lLeft
+
+    Y = Items(X).lRight
+
+    ' establish x.lRight link
+    Items(X).lRight = Items(Y).lLeft
+    If Items(Y).lLeft <> Sentinel Then Items(Items(Y).lLeft).lParent = X
+
+    ' establish y.lParent link
+    If Y <> Sentinel Then Items(Y).lParent = Items(X).lParent
+    If Items(X).lParent <> 0 Then
+        If X = Items(Items(X).lParent).lLeft Then
+            Items(Items(X).lParent).lLeft = Y
+        Else
+            Items(Items(X).lParent).lRight = Y
+        End If
+    Else
+        Root = Y
+    End If
+
+    ' link x and y
+    Items(Y).lLeft = X
+    If X <> Sentinel Then Items(X).lParent = Y
+    
+End Sub
+
+Private Sub RotateRight(ByVal X As Long)
+'   inputs:
+'       x                     designates node
+'   action:
+'       perform a lRight tree rotation about "x"
+'
+    Dim Y As Long
+
+    ' rotate node x to lRight
+
+    Y = Items(X).lLeft
+
+    ' establish x.lLeft link
+    Items(X).lLeft = Items(Y).lRight
+    If Items(Y).lRight <> Sentinel Then Items(Items(Y).lRight).lParent = X
+
+    ' establish y.lParent link
+    If Y <> Sentinel Then Items(Y).lParent = Items(X).lParent
+    If Items(X).lParent <> 0 Then
+        If X = Items(Items(X).lParent).lRight Then
+            Items(Items(X).lParent).lRight = Y
+        Else
+            Items(Items(X).lParent).lLeft = Y
+        End If
+    Else
+        Root = Y
+    End If
+
+    ' link x and y
+    Items(Y).lRight = X
+    If X <> Sentinel Then Items(X).lParent = Y
+    
+End Sub
+
+Private Sub InsertFixup(ByRef X As Long)
+'   inputs:
+'       x                     designates node
+'   action:
+'       maintains red-black tree properties after inserting node x
+'
+    Dim Y As Long
+
+    Do While X <> Root
+        If Items(Items(X).lParent).Color <> Red Then Exit Do
+        
+        ' we have a violation
+        If Items(X).lParent = Items(Items(Items(X).lParent).lParent).lLeft Then
+            Y = Items(Items(Items(X).lParent).lParent).lRight
+            If Items(Y).Color = Red Then
+
+                ' uncle is Red
+                Items(Items(X).lParent).Color = Black
+                Items(Y).Color = Black
+                Items(Items(Items(X).lParent).lParent).Color = Red
+                X = Items(Items(X).lParent).lParent
+            Else
+
+                ' uncle is Black
+                If X = Items(Items(X).lParent).lRight Then
+                    ' make x a lLeft child
+                    X = Items(X).lParent
+                    RotateLeft X
+                End If
+
+                ' recolor and rotate
+                Items(Items(X).lParent).Color = Black
+                Items(Items(Items(X).lParent).lParent).Color = Red
+                RotateRight Items(Items(X).lParent).lParent
+            End If
+        Else
+
+            ' mirror image of above code
+            Y = Items(Items(Items(X).lParent).lParent).lLeft
+            If Items(Y).Color = Red Then
+
+                ' uncle is Red
+                Items(Items(X).lParent).Color = Black
+                Items(Y).Color = Black
+                Items(Items(Items(X).lParent).lParent).Color = Red
+                X = Items(Items(X).lParent).lParent
+            Else
+
+                ' uncle is Black
+                If X = Items(Items(X).lParent).lLeft Then
+                    X = Items(X).lParent
+                    RotateRight X
+                End If
+                Items(Items(X).lParent).Color = Black
+                Items(Items(Items(X).lParent).lParent).Color = Red
+                RotateLeft Items(Items(X).lParent).lParent
+            End If
+        End If
+    Loop
+    
+    Items(Root).Color = Black
+    
+End Sub
+
+
+Private Sub DeleteFixup(ByRef X As Long)
+'   inputs:
+'       x                     designates node
+'   action:
+'       maintains red-black tree properties after deleting a node
+'
+    Dim w As Long
+
+    Do While (X <> Root)
+        If Items(X).Color <> Black Then Exit Do
+        If X = Items(Items(X).lParent).lLeft Then
+            w = Items(Items(X).lParent).lRight
+            If Items(w).Color = Red Then
+                Items(w).Color = Black
+                Items(Items(X).lParent).Color = Red
+                RotateLeft Items(X).lParent
+                w = Items(Items(X).lParent).lRight
+            End If
+            If Items(Items(w).lLeft).Color = Black _
+            And Items(Items(w).lRight).Color = Black Then
+                Items(w).Color = Red
+                X = Items(X).lParent
+            Else
+                If Items(Items(w).lRight).Color = Black Then
+                    Items(Items(w).lLeft).Color = Black
+                    Items(w).Color = Red
+                    RotateRight w
+                    w = Items(Items(X).lParent).lRight
+                End If
+                Items(w).Color = Items(Items(X).lParent).Color
+                Items(Items(X).lParent).Color = Black
+                Items(Items(w).lRight).Color = Black
+                RotateLeft Items(X).lParent
+                X = Root
+            End If
+        Else
+            w = Items(Items(X).lParent).lLeft
+            If Items(w).Color = Red Then
+                Items(w).Color = Black
+                Items(Items(X).lParent).Color = Red
+                RotateRight Items(X).lParent
+                w = Items(Items(X).lParent).lLeft
+            End If
+            If Items(Items(w).lRight).Color = Black _
+            And Items(Items(w).lLeft).Color = Black Then
+                Items(w).Color = Red
+                X = Items(X).lParent
+            Else
+                If Items(Items(w).lLeft).Color = Black Then
+                    Items(Items(w).lRight).Color = Black
+                    Items(w).Color = Red
+                    RotateLeft w
+                    w = Items(Items(X).lParent).lLeft
+                End If
+                Items(w).Color = Items(Items(X).lParent).Color
+                Items(Items(X).lParent).Color = Black
+                Items(Items(w).lLeft).Color = Black
+                RotateRight Items(X).lParent
+                X = Root
+            End If
+        End If
+    Loop
+    Items(X).Color = Black
+    
+End Sub
+
+Public Function Remove(ByVal KeyVal As Variant) As Long
+'   inputs:
+'       KeyVal                key of node to delete
+'   action:
+'       Deletes record with key KeyVal.
+'   error:
+'       errKeyNotFound
+'
+    Dim X As Long
+    Dim Y As Long
+    Dim z As Long
+    Dim i As Long
+    
+    Remove = 0
+    
+    z = GetKeyIndex(KeyVal) ' FindNode(KeyVal)
+    If z = 0 Then
+        Raise [Invalid Index], "Remove"
+    End If
+    
+    '  delete node z from tree
+    If Items(z).lLeft = Sentinel Or Items(z).lRight = Sentinel Then
+        ' y has a Sentinel node as a child
+        Y = z
+    Else
+        ' find tree successor with a Sentinel node as a child
+        Y = Items(z).lRight
+        Do While Items(Y).lLeft <> Sentinel
+            Y = Items(Y).lLeft
+        Loop
+    End If
+
+    ' x is y's only child, and x may be a sentinel node
+    If Items(Y).lLeft <> Sentinel Then
+        X = Items(Y).lLeft
+    Else
+        X = Items(Y).lRight
+    End If
+
+    ' remove y from the lParent chain
+    Items(X).lParent = Items(Y).lParent
+    If Items(Y).lParent <> 0 Then
+        If Y = Items(Items(Y).lParent).lLeft Then
+            Items(Items(Y).lParent).lLeft = X
+        Else
+            Items(Items(Y).lParent).lRight = X
+        End If
+    Else
+        Root = X
+    End If
+    If Y <> z Then
+        Dim j As Long
+        ' copy data fields from y to z
+        ' z item now contains y item
+        Items(z).vKey = Items(Y).vKey
+        If IsObject(Items(Y).vData) Then
+          Set Items(z).vData = Items(Y).vData
+        Else
+          Items(z).vData = Items(Y).vData
+        End If
+        
+        ' Swap index of z and y
+        i = GetIndex(z)
+        j = GetIndex(Y)
+        
+        lIndex(i) = Y
+        lIndex(j) = z
+        
+        
+    End If
+    
+    ' if we removed a black node, we need to do some fixup
+    If Items(Y).Color = Black Then DeleteFixup X
+
+    Set Items(Y).vData = Nothing
+    Items(Y).vData = Empty
+    Set Items(Y).vKey = Nothing
+    Items(Y).vKey = Empty
+    
+    ' Delete index of y
+    i = GetIndex(Y)
+    LiftItem i
+    Remove = i
+    
+    lIndex(lCount) = 0
+    lCount = lCount - 1
+    
+    Node.Free Y
+    
+End Function
+
+Private Function GetNextNode() As Long
+'   returns:
+'       index to next node, 0 if none
+'   action:
+'       Finds index to next node.
+'
+    Do While (NextNode <> 0 Or StackIndex <> 0)
+        Do While NextNode <> 0
+            StackIndex = StackIndex + 1
+            Stack(StackIndex) = NextNode
+            NextNode = Items(NextNode).lLeft
+        Loop
+        GetNextNode = Stack(StackIndex)
+        StackIndex = StackIndex - 1
+        NextNode = Items(GetNextNode).lRight
+        Exit Function
+    Loop
+    Raise [Key not Found], "GetNextNode"
+    
+End Function
+
+
+Public Function FindFirst(ByRef KeyVal As Variant) As Variant
+'   outputs:
+'       KeyVal                key of node to find
+'   returns:
+'       record associated with key
+'   action:
+'       For sequential access, finds first record.
+'   errors:
+'       errKeyNotFound
+'
+    Dim N As Long
+    
+    ' for sequential access, call FindFirst, followed by
+    ' repeated calls to FindNext
+    
+    NextNode = Root
+    N = GetNextNode()
+    KeyVal = Items(N).vKey
+    FindFirst = Items(N).vData
+    
+End Function
+
+Public Function FindNext(ByRef KeyVal As Variant) As Variant
+'   outputs:
+'       KeyVal                record key
+'   returns:
+'       record associated with key
+'   action:
+'       For sequential access, finds next record.
+'   errors:
+'       errKeyNotFound
+'
+    Dim N As Long
+    
+    ' for sequential access, call FindFirst, followed by
+    ' repeated calls to FindNext
+    
+    N = GetNextNode()
+    KeyVal = Items(N).vKey
+    FindNext = Items(N).vData
+    
+End Function
+
+Public Sub Init(ByVal InitialAllocVal As Long, _
+                ByVal GrowthFactorVal As Single)
+'   inputs:
+'       InitialAllocVal         initial value for allocating nodes
+'       GrowthFactorVal         amount to grow node storage space
+'   action:
+'       initialize tree
+'
+    GrowthFactor = GrowthFactorVal
+
+    ' allocate nodes
+    ReDim Items(0 To InitialAllocVal)
+    ReDim lIndex(1 To InitialAllocVal + 1)
+    
+    ' initialize root and sentinel
+    Items(Sentinel).lLeft = Sentinel
+    Items(Sentinel).lRight = Sentinel
+    Items(Sentinel).lParent = 0
+    Items(Sentinel).Color = Black
+    Root = Sentinel
+
+    ' startup node manager
+    Set Node = New CNode
+    Node.Init InitialAllocVal, GrowthFactorVal
+    
+    ' Initialize error container
+    Set Errors = New CErrorCollection
+    
+    StackIndex = 0
+    lCount = 0
+    
+End Sub
+
+Public Function Clear() As Long
+'   action:
+'       Clears memory
+    Dim i As Long
+    
+    If Node Is Nothing Then Exit Function
+    
+    Set Node = Nothing
+    Set Errors = Nothing
+    
+    For i = 1 To lCount - 1
+        Set Items(i).vData = Nothing
+        Items(i).vData = Empty
+    Next
+    
+    For i = 1 To lCount - 1
+        Set Items(i).vKey = Nothing
+        Items(i).vKey = Empty
+    Next
+    
+    Erase Items
+    lCount = 0
+    Clear = lCount
+    
+End Function
+
+Public Function Exist(ByVal vKey As Variant) As Boolean
+'   action:
+'       Searches in the array for the specified item
+'   inputs:
+'       vKey        The key or Index of the item
+'   returns:
+'       True is item exist. Otherwise false
+    
+    Exist = GetKeyIndex(vKey) > 0
+    
+End Function
+
+Private Sub Class_Initialize()
+    
+    InitialAlloc = DefaultInitialAlloc
+    GrowthFactor = DefaultGrowthFactor
+    mCompareMode = vbTextCompare
+    
+End Sub
+
+Private Sub Class_Terminate()
+'   action:
+'       release memory
+'
+    Clear
+    Set Errors = Nothing
+    
+End Sub
+
+Public Property Get Item(ByVal vKey As Variant) As Variant
+'   action:
+'       Returns the item's data specified in vKey
+'   inputs:
+'       vKey        The key or Index of the item
+
+    Dim lIndex As Long
+    
+    Set Item = Nothing
+    lIndex = GetKeyIndex(vKey)
+    If lIndex > 0 Then
+        If IsObject(Items(lIndex).vData) Then
+            Set Item = Items(lIndex).vData
+        Else
+            Item = Items(lIndex).vData
+        End If
+    Else
+      Raise [Key not Found], "Item"
+    End If
+    
+End Property
+
+
+Public Property Let Item(ByVal vKey As Variant, ByRef vNewValue As Variant)
+
+    ' Update item's data
+    Dim lIndex As Long
+
+    lIndex = GetKeyIndex(vKey)
+    If lIndex > 0 Then
+        If IsObject(vNewValue) Then
+            Set Items(lIndex).vData = vNewValue
+        Else
+            Items(lIndex).vData = vNewValue
+        End If
+    End If
+    
+End Property
+
+Public Property Get Key(ByVal Index As Long) As Variant
+    ' Returns the item's vKey related to index
+    If Index < 0 Or Index > lCount Then
+        Raise [Invalid Index], "Key[Read]"
+    Else
+        Key = Items(lIndex(Index)).vKey
+    End If
+End Property
+
+Public Property Let Key(ByVal Index As Long, ByVal vNewKey As Variant)
+    ' Update item's vKey related to index
+    If Index < 0 Or Index > lCount Then
+        Raise [Invalid Index], "Key[Assign]"
+    Else
+        If FindNode(vNewKey) <> 0 Then
+            If Not AllowDuplicate Then
+                Raise [Duplicate Key], "Key[Assign]"
+            Else
+                Items(lIndex(Index)).vKey = vNewKey
+            End If
+        End If
+    End If
+End Property
+
+Public Property Get Count() As Long
+' The number of entries currently in the cache.
+    Count = lCount
+End Property
+
+Public Property Get Size() As Long
+' The maximum size of the cache.
+    Size = UBound(Items())
+End Property
+
+Public Property Get CompareMode() As VbCompareMethod
+  CompareMode = mCompareMode
+End Property
+
+Public Property Let CompareMode(ByVal NewMode As VbCompareMethod)
+  mCompareMode = NewMode
+End Property
+
+Private Sub LiftItem(i As Long)
+    'Dim x As Long
+    'For x = i To lCount - 1
+    '    lIndex(x) = lIndex(x + 1)
+    'Next
+    MoveMemory lIndex(i), lIndex(i + 1), (lCount - i) * 4
+End Sub
+
+Private Sub InsertItem(i As Long)
+  'Dim j As Long
+  'For j = lCount To i + 1 Step -1
+  '  lIndex(j) = lIndex(j - 1)
+  'Next
+  MoveMemory lIndex(i + 1), lIndex(i), (lCount - i) * 4
+  
+End Sub
+
+
+Private Sub Raise(ByVal errno As HiveErrors, ByVal sLocation As String)
+'   inputs:
+'       errno       Error ID
+'       sLocation   Location of the error
+    
+    Dim sErrMsg As String
+    
+    Select Case errno
+        
+        Case [Invalid Index]
+            sErrMsg = "Invalid Index."
+        Case [Key not Found]
+            sErrMsg = "Key not Found in the Hive."
+        Case [Key Cannot Be Integer]
+            sErrMsg = "Key cannot be Integer or Long or Byte or any kind of Fixed Digit."
+        Case [Duplicate Key]
+            sErrMsg = "Duplicate Key."
+        Case [Invalid Parameter]
+            sErrMsg = "Invalid Parameter."
+
+    End Select
+        
+    If RaiseError Then
+        Err.Raise vbObjectError + 5000 + errno, csClassName + "." + sLocation, sErrMsg
+    End If
+    If Errors Is Nothing Then
+      Set Errors = New CErrorCollection
+    End If
+    Errors.Add vbObjectError + 5000 + errno, sLocation, sErrMsg
+    
+End Sub
